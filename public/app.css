@@ -59,3 +59,29 @@ details summary{cursor:pointer;font-weight:600}
 a{color:var(--brand)}
 .leaflet-container{background:#cfdde1;font:inherit}
 @media (min-width:760px){#map{height:56vh}}
+
+.rain h2{font-size:18px}
+.rain h3{text-transform:none;letter-spacing:0;font-size:15px;color:var(--ink);margin:14px 0 4px}
+.sm{font-size:12px}
+.seg{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:8px 0 2px}
+.rcard{border:1px solid var(--line);border-radius:12px;padding:9px 11px;margin:8px 0;display:grid;gap:3px}
+.rcard.hot{border-color:var(--rad);background:color-mix(in srgb,var(--rad) 7%,var(--card))}
+.rcard.sel{outline:2px solid var(--brand)}
+.rtop{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.rchip{display:inline-block;border-radius:999px;padding:2px 9px;font-size:12px;font-weight:700;border:1px solid var(--line)}
+.rchip.over{background:var(--rad);color:#fff;border-color:var(--rad)}
+.rchip.near{border-color:var(--rad);color:var(--rad)}
+.rchip.none{border-color:var(--none);color:var(--none)}
+.rchip.unk{border-color:var(--unk);color:var(--muted)}
+.acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+a.btn{display:inline-block;text-decoration:none;color:inherit;border:1px solid var(--line);border-radius:10px;padding:7px 12px;min-height:36px}
+a.btn.warn{border-color:var(--bad);color:var(--bad)}
+.warnline,.haz{font-size:13px;border-inline-start:3px solid var(--bad);padding:3px 8px;margin:3px 0;background:color-mix(in srgb,var(--bad) 8%,transparent);border-radius:4px}
+.haz{border-color:var(--warn);background:color-mix(in srgb,var(--warn) 9%,transparent)}
+.safety{border:1px solid var(--warn);border-radius:12px;padding:9px 12px;margin:10px 0;background:color-mix(in srgb,var(--warn) 8%,var(--card))}
+.safety.red{border-color:var(--bad);background:color-mix(in srgb,var(--bad) 9%,var(--card))}
+.safety ul{margin:6px 0 0;padding-inline-start:18px}.safety li{margin:3px 0;font-size:13px}
+.safety .bad{color:var(--bad);font-weight:700}
+.areas{margin:4px 0;padding-inline-start:18px;font-size:13px}
+.cand{margin:6px 0}
+.row2{font-size:13px}

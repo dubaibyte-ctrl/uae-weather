@@ -58,5 +58,13 @@ export async function decodePng(buf) {
     const idx = out[i];
     return [plte[idx * 3], plte[idx * 3 + 1], plte[idx * 3 + 2], trns && idx < trns.length ? trns[idx] : 255];
   };
-  return { w, h, ct, pixel };
+  // Alpha plane without per-pixel allocations (used for whole-tile radar analysis).
+  const alpha = () => {
+    const a = new Uint8Array(w * h);
+    if (ct === 6) for (let i = 0; i < a.length; i++) a[i] = out[i * 4 + 3];
+    else if (ct === 4) for (let i = 0; i < a.length; i++) a[i] = out[i * 2 + 1];
+    else { const lut = new Uint8Array(256).fill(255); if (trns) for (let i = 0; i < trns.length; i++) lut[i] = trns[i]; for (let i = 0; i < a.length; i++) a[i] = lut[out[i]]; }
+    return a;
+  };
+  return { w, h, ct, pixel, alpha };
 }

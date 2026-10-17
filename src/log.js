@@ -15,12 +15,29 @@ export class ValidationLog extends DurableObject {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS radar(
       frame_ms INTEGER NOT NULL, station TEXT NOT NULL, state TEXT, echo INTEGER, alpha INTEGER, rgb TEXT,
       PRIMARY KEY(frame_ms, station))`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS scanframe(frame_ms INTEGER PRIMARY KEY, saved_ms INTEGER, ok TEXT, noise INTEGER, errs TEXT, clusters TEXT)`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS coverage(id INTEGER PRIMARY KEY, saved_ms INTEGER, state TEXT, share REAL, errs TEXT, runs TEXT)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS runs(at_ms INTEGER PRIMARY KEY, metar_n INTEGER, frames_n INTEGER, errors TEXT)`);
   }
 
   knownFrames() {
     const since = Date.now() - 6 * 3600e3;
     return this.sql.exec("SELECT DISTINCT frame_ms FROM radar WHERE frame_ms > ?", since).toArray().map((r) => r.frame_ms);
+  }
+
+  // ---- radar scan (whole-UAE echo clusters) ----
+  scanKnown() { return this.sql.exec("SELECT frame_ms FROM scanframe").toArray().map((r) => r.frame_ms); }
+  coverageAge() { const r = this.sql.exec("SELECT saved_ms, state FROM coverage WHERE id=1").toArray()[0]; return r ? { savedMs: r.saved_ms, state: r.state } : null; }
+  saveScan(fr, cov) {
+    if (fr) this.sql.exec("INSERT OR REPLACE INTO scanframe VALUES(?,?,?,?,?,?)", fr.frameMs, Date.now(), JSON.stringify(fr.ok), fr.noise, (fr.errs || []).join(" | "), JSON.stringify(fr.clusters));
+    if (cov) this.sql.exec("INSERT OR REPLACE INTO coverage VALUES(1,?,?,?,?,?)", Date.now(), cov.state, cov.share, (cov.errs || []).join(" | "), JSON.stringify(cov.runs));
+    this.sql.exec("DELETE FROM scanframe WHERE frame_ms < ?", Date.now() - 4 * 3600e3);
+  }
+  loadScan(limit = 3) {
+    const frames = this.sql.exec("SELECT frame_ms, saved_ms, ok, noise, errs, clusters FROM scanframe ORDER BY frame_ms DESC LIMIT ?", limit).toArray()
+      .map((r) => ({ ms: r.frame_ms, savedMs: r.saved_ms, ok: JSON.parse(r.ok), noise: r.noise, errs: r.errs, clusters: JSON.parse(r.clusters) }));
+    const c = this.sql.exec("SELECT saved_ms, state, share, errs, runs FROM coverage WHERE id=1").toArray()[0];
+    return { frames, coverage: c ? { savedMs: c.saved_ms, state: c.state, share: c.share, errs: c.errs, runs: JSON.parse(c.runs) } : null };
   }
 
   record({ metars, radar, errors, at }) {
@@ -50,6 +67,9 @@ export class ValidationLog extends DurableObject {
     };
   }
 
+  // Scan problems happen after record(); append them to the run's error text so /api/health shows them.
+  noteErrors(at, errors) { this.sql.exec("UPDATE runs SET errors = ? WHERE at_ms = ?", errors.join(" | "), at); }
+
   health() {
     const last = this.sql.exec("SELECT at_ms, metar_n, frames_n, errors FROM runs ORDER BY at_ms DESC LIMIT 1").toArray()[0] || null;
     const counts = {
@@ -57,6 +77,9 @@ export class ValidationLog extends DurableObject {
       radar: this.sql.exec("SELECT COUNT(*) AS n FROM radar").one().n,
       runs: this.sql.exec("SELECT COUNT(*) AS n FROM runs").one().n,
     };
-    return { last, counts };
+    counts.scanFrames = this.sql.exec("SELECT COUNT(*) AS n FROM scanframe").one().n;
+    const cov = this.sql.exec("SELECT saved_ms, state, share FROM coverage WHERE id=1").toArray()[0] || null;
+    const lastScan = this.sql.exec("SELECT frame_ms, ok, noise, length(clusters) AS bytes FROM scanframe ORDER BY frame_ms DESC LIMIT 1").toArray()[0] || null;
+    return { last, counts, coverage: cov, lastScan };
   }
 }

@@ -1,0 +1,191 @@
+Rashidiya|Rashidiya|du|district
+Mirdif|Mirdif|du|district
+Al Khawaneej|Al Khawaneej|du|district
+Al Awir|Al Awir|du|district
+Al Warqa|Al Warqaa|du|district
+Nad Al Sheba|Nad Al Sheba|du|district
+Jumeirah|Jumeirah|du|district
+Al Barsha|Al Barsha|du|district
+Dubai Marina|Dubai Marina|du|landmark
+Jebel Ali|Jebel Ali|du|town
+Lahbab|Lahbab|du|village
+Hatta|Hatta|du|town
+Deira|Deira|du|district
+Bur Dubai|Bur Dubai|du|district
+Downtown Dubai|Downtown Dubai|du|district
+Al Quoz|Al Quoz|du|district
+Business Bay|Business Bay|du|district
+Dubai Silicon Oasis|Silicon Oasis|du|district
+Al Qusais|Al Qusais|du|district
+Al Nahda (Dubai)|Al Nahda|du|district
+Palm Jumeirah|Palm Jumeirah|du|landmark
+Umm Suqeim|Umm Suqeim|du|district
+Al Satwa|Al Satwa|du|district
+Muhaisnah|Muhaisnah|du|district
+Ras Al Khor|Ras Al Khor|du|district
+Dubai Festival City|Dubai Festival City|du|landmark
+Margham|Margham|du|village
+Saih Shuaib|Saih Shuaib|du|district
+Al Mizhar|Al Mizhar|du|district
+Jumeirah Village Circle|Jumeirah Village Circle|du|district
+Dubai Hills|Dubai Hills|du|district
+Dubai Academic City|Academic City|du|district
+Al Qudra Lakes|Al Qudra Lakes|du|landmark
+Hatta Dam|Hatta Dam|du|dam
+Al Lisaili|Lisaili|du|village
+Al Faqa|Al Faqa|du|village
+Al Marmoom|Al Marmoom|du|reserve
+Sharjah|Sharjah|sh|city
+Al Dhaid|Al Dhaid|sh|town
+Mleiha|Mleiha|sh|village
+Al Madam|Al Madam|sh|town
+Kalba|Kalba|sh|town
+Khor Fakkan|Khor Fakkan|sh|town
+Dibba Al-Hisn|Dibba Al Hisn|sh|town
+Al Hamriyah|Al Hamriyah|sh|town
+Al Bataeh|Al Bataeh|sh|village
+Al Rahmaniyah|Al Rahmaniyah|sh|district
+Muwaileh|Muwaileh|sh|district
+Al Khan (Sharjah)|Al Khan|sh|district
+Al Nahda (Sharjah)|Al Nahda|sh|district
+Al Heera|Al Heera|sh|district
+Wasit|Wasit|sh|district
+Maliha|Maliha|sh|village
+Al Badayer|Al Badayer|sh|village
+Wadi Al Helo|Wadi Al Helo|sh|wadi
+Al Rafisah Dam|Al Rafisah|sh|dam
+Khor Kalba|Khor Kalba|sh|landmark
+Jebel Al Fayah|Fayah|sh|mountain
+Ajman|Ajman|aj|city
+Al Nuaimiya|Al Nuaimiya|aj|district
+Masfout|Masfout|aj|town
+Manama (Ajman)|Manama|aj|town
+Al Jurf|Al Jurf|aj|district
+Al Mowaihat|Al Mowaihat|aj|district
+Al Zahra (Ajman)|Al Zahra|aj|district
+Al Hamidiyah|Al Hamidiyah|aj|district
+Umm Al Quwain|Umm Al Quwain|uq|city
+Falaj Al Mualla|Falaj Al Mualla|uq|town
+Al Salamah|Al Salamah|uq|district
+Al Rafaah|Al Rafaah|uq|district
+Al Ramlah (UAQ)|Al Ramlah|uq|district
+Siniyah Island|Siniyah|uq|landmark
+Al Humrah|Al Humrah|uq|village
+Ras Al Khaimah|Ras Al Khaimah|rk|city
+Al Jazirah Al Hamra|Al Jazirah Al Hamra|rk|town
+Al Marjan Island|Al Marjan Island|rk|landmark
+Khatt|Khatt|rk|village
+Wadi Shawka Dam|Wadi Shawka|rk|dam
+Jebel Jais|Jebel Jais|rk|mountain
+Al Rams|Rams|rk|town
+Sha'am|Shaam|rk|village
+Al Mamourah|Al Mamourah|rk|district
+Khor Khwair|Khor Khuwair|rk|district
+Ghalilah|Ghalilah|rk|village
+Dhayah|Dhayah|rk|village
+Wadi Bih|Wadi Bih|rk|wadi
+Digdagga|Digdagga|rk|village
+Al Hamra Village|Al Hamra|rk|landmark
+Masafi|Masafi|fu|town
+Julfar|Julfar|rk|district
+Al Qusaidat|Al Qusaidat|rk|district
+Ghub|Ghub|rk|village
+Fujairah|Fujairah|fu|city
+Dibba Al-Fujairah|Dibba Al Fujairah|fu|town
+Al Bithnah|Al Bithnah|fu|village
+Mirbah|Mirbah|fu|village
+Qidfa|Qidfa|fu|village
+Murbad|Murbad|fu|village
+Dadna|Dadna|fu|village
+Al Aqah|Al Aqah|fu|village
+Sakamkam|Sakamkam|fu|village
+Gurfa|Gurfa|fu|village
+Wadi Wurayah|Wurayah|fu|wadi
+Tawian Dam|Tawian|fu|dam
+Al Hayl|Al Hayl|fu|village
+Siji|Siji|fu|village
+Al Faseel|Al Faseel|fu|village
+Abu Dhabi|Abu Dhabi|ad|city
+Khalifa City|Khalifa City|ad|district
+Yas Island|Yas Island|ad|landmark
+Saadiyat Island|Saadiyat Island|ad|landmark
+Al Reem Island|Reem Island|ad|landmark
+Masdar City|Masdar City|ad|landmark
+Mussafah|Mussafah|ad|district
+Al Shamkha|Al Shamkha|ad|district
+Al Wathba|Al Wathba|ad|district
+Baniyas|Baniyas|ad|district
+Al Bahia|Al Bahia|ad|town
+Ruwais|Ruwais|ad|town
+Madinat Zayed|Madinat Zayed|ad|town
+Liwa Oasis|Liwa|ad|town
+Ghayathi|Ghayathi|ad|town
+Sila|Sila|ad|town
+Al Mirfa|Mirfa|ad|town
+Delma Island|Delma|ad|landmark
+Sir Bani Yas|Sir Bani Yas|ad|landmark
+Al Samha|Al Samha|ad|village
+Shahama|Shahama|ad|district
+Al Rahba|Al Rahba|ad|district
+Jebel Dhanna|Jebel Dhanna|ad|town
+Habshan|Habshan|ad|village
+Umm Al Nar|Umm Al Nar|ad|landmark
+Al Mafraq|Al Mafraq|ad|district
+Zayed City|Zayed City|ad|district
+Al Falah|Al Falah|ad|district
+Al Shawamekh|Al Shawamekh|ad|district
+Khalifa Port|Khalifa Port|ad|landmark
+Hudayriyat Island|Hudayriyat|ad|landmark
+Al Maryah Island|Maryah Island|ad|landmark
+Ghantoot|Ghantoot|ad|village
+Bida Zayed|Bida Zayed|ad|town
+Al Ain|Al Ain|aa|city
+Al Jimi|Al Jimi|aa|district
+Al Hili|Al Hili|aa|district
+Jebel Hafeet|Jebel Hafeet|aa|mountain
+Al Khrair|Al Khrair|aa|district
+Al Qua'a|Al Qua|aa|town
+Al Yahar|Al Yahar|aa|village
+Sweihan|Sweihan|aa|town
+Remah|Remah|aa|village
+Al Wagan|Al Wagan|aa|village
+Mezyad|Mezyad|aa|village
+Nahel|Nahel|aa|village
+Al Masoudi|Al Masoudi|aa|district
+Zakhir|Zakhir|aa|village
+Al Mutaredh|Al Mutaredh|aa|district
+Al Towayya|Al Towayya|aa|district
+Al Khaznah|Al Khaznah|aa|village
+Um Ghafah|Um Ghafah|aa|village
+Al Foah|Al Foah|aa|district
+Al Qattara|Al Qattara|aa|district
+Al Hayer|Al Hayer|aa|village
+Al Shuaibah|Al Shuaibah|aa|village
+Motor City|Motor City|du|district
+Arabian Ranches|Arabian Ranches|du|district
+Dubai Investments Park|Dubai Investments Park|du|district
+Al Furjan|Al Furjan|du|district
+Emirates Hills|Emirates Hills|du|district
+Al Sufouh|Al Sufouh|du|district
+International City|International City|du|district
+Bluewaters Island|Bluewaters Island|du|landmark
+Dubai South|Dubai South|du|district
+Al Jaddaf|Al Jaddaf|du|district
+Oud Metha|Oud Metha|du|district
+Al Karama|Al Karama|du|district
+Al Garhoud|Al Garhoud|du|district
+Al Twar|Al Twar|du|district
+Umm Ramool|Umm Ramool|du|district
+Al Mamzar|Al Mamzar|du|district
+Al Muteena|Al Muteena|du|district
+Mushrif|Mushrif|du|district
+Al Majaz|Al Majaz|sh|district
+Al Qasimia|Al Qasimia|sh|district
+Al Taawun|Al Taawun|sh|district
+Mughaidir|Mughaidir|sh|village
+Al Zahia|Al Zahia|sh|district
+Emirates City|Emirates City|aj|district
+Al Bustan|Al Bustan|aj|district
+Al Raas|Al Raas|uq|district
+Al Ramlah (Umm Al Quwain)|Al Ramlah|uq|district
+Al Khor (Umm Al Quwain)|Al Khor|uq|district

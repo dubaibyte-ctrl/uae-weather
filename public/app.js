@@ -324,6 +324,7 @@ function render() {
   renderStatic(); renderPills();
   const res = places().map((p) => ({ p, a: assess(p) }));
   renderOverview(res); renderMap(res); renderChips(); renderDetail(res); renderAlerts(res); renderValidation(); renderAbout();
+  if (window.renderRain) window.renderRain();
   if (S.frames.length) showFrame(S.idx);
 }
 function select(id) { S.sel = id; ls("sel", id); const p = byId(id); if (p && S.map) S.map.panTo([p.lat, p.lng]); render(); window.scrollTo({ top: $("chips").offsetTop - 8, behavior: "smooth" }); }
@@ -364,7 +365,7 @@ async function loadAll() {
   if (S.busy) return; S.busy = true;
   try {
     S.log = [];
-    await Promise.all([loadRadar(), loadMetar(), loadOM(), loadValidation()]);
+    await Promise.all([loadRadar(), loadMetar(), loadOM(), loadValidation(), window.loadRain ? window.loadRain() : null]);
     await probeAll(); S.lastLoad = Date.now(); render();
   } finally { S.busy = false; }
 }

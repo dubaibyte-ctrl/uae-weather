@@ -18,7 +18,7 @@ test("record is idempotent and health reports the last run", () => {
   const payload = { metars: [m("OMDB", now - 3600e3)], radar: [r("OMDB", now - 3600e3, 0)], errors: [], at: now };
   log.record(payload); log.record(payload);
   const h = log.health();
-  assert.deepEqual(h.counts, { metar: 1, radar: 1, runs: 1 });
+  assert.deepEqual(h.counts, { metar: 1, radar: 1, runs: 1, scanFrames: 0 });
   assert.equal(h.last.metar_n, 1);
   assert.deepEqual(log.knownFrames(), [now - 3600e3]);
 });
@@ -43,4 +43,17 @@ test("old rows are purged after 90 days", () => {
   log.record({ metars: [m("OMDB", old)], radar: [r("OMDB", old, 0)], errors: [], at: old });
   log.record({ metars: [], radar: [], errors: [], at: now });
   assert.equal(log.health().counts.metar, 0); assert.equal(log.health().counts.radar, 0);
+});
+
+test("scan frames and coverage round-trip through storage", () => {
+  const log = makeLog();
+  log.saveScan({ frameMs: now - 600e3, ok: [1, 1, 1, 1, 1, 0], noise: 2, errs: ["http_500"], clusters: [{ n: 5, cx: 1, cy: 2, runs: [2, 1, 5] }] }, { state: "ok", share: 0.5, errs: [], runs: [0, 0, 10] });
+  log.saveScan({ frameMs: now, ok: [1, 1, 1, 1, 1, 1], noise: 0, errs: [], clusters: [] }, null);
+  assert.deepEqual(log.scanKnown().sort(), [now - 600e3, now].sort());
+  const s = log.loadScan(3);
+  assert.equal(s.frames[0].ms, now); assert.equal(s.frames[1].clusters[0].n, 5); assert.deepEqual(s.frames[1].ok, [1, 1, 1, 1, 1, 0]);
+  assert.equal(s.coverage.state, "ok"); assert.deepEqual(s.coverage.runs, [0, 0, 10]);
+  assert.equal(log.health().counts.scanFrames, 2);
+  log.saveScan({ frameMs: now - 9 * 3600e3, ok: [], noise: 0, errs: [], clusters: [] }, null);
+  assert.equal(log.scanKnown().includes(now - 9 * 3600e3), false, "frames older than 4 h are purged on save");
 });
