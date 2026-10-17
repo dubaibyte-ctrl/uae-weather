@@ -1,0 +1,15 @@
+{
+  "name": "uae-weather",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "UAE Live Rain & Weather Explorer (personal/family use)",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node --test test/lib.test.js && node --import ./test/loader.mjs --test test/log.test.js"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  }
+}

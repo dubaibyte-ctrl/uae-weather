@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f4c5c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="UAE Weather">
+<title>UAE Rain &amp; Weather</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <h1 id="title">UAE Rain &amp; Weather</h1>
+  <div class="top-actions">
+    <button id="notify" class="ghost" hidden></button>
+    <button id="langBtn" class="ghost" aria-label="Language">ع</button>
+  </div>
+</header>
+<div id="alerts"></div>
+<div id="pills" class="pills"></div>
+<section id="overview" class="card overview"></section>
+<div id="map" role="application" aria-label="Map"></div>
+<div class="ctl">
+  <button id="play"></button>
+  <input type="range" id="slider" min="0" max="0" value="0" aria-label="Radar time">
+  <span id="frameLbl" class="muted"></span>
+</div>
+<div id="legend" class="legend"></div>
+<section class="search">
+  <input id="q" type="search" autocomplete="off" enterkeyhint="search">
+  <div id="results" class="results" hidden></div>
+</section>
+<nav id="chips" class="chips" aria-label="Cities"></nav>
+<main id="detail"></main>
+<section id="validation" class="card"></section>
+<section id="about" class="card"></section>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
