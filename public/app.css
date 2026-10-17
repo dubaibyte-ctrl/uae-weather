@@ -85,3 +85,18 @@ a.btn.warn{border-color:var(--bad);color:var(--bad)}
 .areas{margin:4px 0;padding-inline-start:18px;font-size:13px}
 .cand{margin:6px 0}
 .row2{font-size:13px}
+
+.community h2{font-size:18px}
+.crep{border:1px solid var(--line);border-radius:12px;padding:9px 11px;margin:8px 0;display:grid;gap:4px;border-inline-start-width:4px}
+.crep.confirmed{border-inline-start-color:var(--obs)}
+.crep.radar{border-inline-start-color:var(--rad)}
+.crep.conflicting{border-inline-start-color:var(--warn)}
+.crep.unverified,.crep.missing{border-inline-start-color:var(--unk)}
+.crep.duplicate{opacity:.6}
+.crtop{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.ctext{font-size:14px;white-space:pre-wrap;word-break:break-word}
+.cst{font:700 10px/1 ui-monospace,Menlo,monospace;padding:3px 6px;border-radius:5px;color:#fff}
+.cst.confirmed{background:var(--obs)}.cst.radar{background:var(--rad)}.cst.conflicting{background:var(--warn)}
+.cst.unverified,.cst.missing{background:var(--unk)}.cst.duplicate{background:var(--unk)}
+button.btn.cfollow{cursor:pointer}
+button.btn.cfollow.on{background:var(--brand);color:var(--bg);border-color:var(--brand)}

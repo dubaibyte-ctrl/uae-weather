@@ -18,7 +18,7 @@ test("record is idempotent and health reports the last run", () => {
   const payload = { metars: [m("OMDB", now - 3600e3)], radar: [r("OMDB", now - 3600e3, 0)], errors: [], at: now };
   log.record(payload); log.record(payload);
   const h = log.health();
-  assert.deepEqual(h.counts, { metar: 1, radar: 1, runs: 1, scanFrames: 0 });
+  assert.deepEqual(h.counts, { metar: 1, radar: 1, runs: 1, scanFrames: 0, community: 0 });
   assert.equal(h.last.metar_n, 1);
   assert.deepEqual(log.knownFrames(), [now - 3600e3]);
 });
@@ -56,4 +56,22 @@ test("scan frames and coverage round-trip through storage", () => {
   assert.equal(log.health().counts.scanFrames, 2);
   log.saveScan({ frameMs: now - 9 * 3600e3, ok: [], noise: 0, errs: [], clusters: [] }, null);
   assert.equal(log.scanKnown().includes(now - 9 * 3600e3), false, "frames older than 4 h are purged on save");
+});
+
+test("community reports: insert, dedupe by id, repost detection by signature, retention", () => {
+  const log = makeLog();
+  const base = { source: "telegram", channel: "Test", channelUser: "test_ch", text: "rain in Mirdif", lang: "en", event: "rain", events: ["rain"], placeId: "mirdif", placeName: "Mirdif", em: "du", lat: 25.22, lon: 55.41, observedMs: now, forwarded: 0, forwardMs: null, url: "https://t.me/test_ch/1", sig: "sigA", hasLocation: true };
+  let res = log.saveReports([{ ...base, id: "telegram:1:1", msgId: 1, publishMs: now }]);
+  assert.deepEqual(res, { saved: 1, duplicate: 0, reposts: 0 });
+  res = log.saveReports([{ ...base, id: "telegram:1:1", msgId: 1, publishMs: now }]);        // same id again
+  assert.equal(res.duplicate, 1); assert.equal(res.saved, 0);
+  res = log.saveReports([{ ...base, id: "telegram:1:2", msgId: 2, publishMs: now + 60000 }]); // same sig, new id = repost
+  assert.equal(res.saved, 1); assert.equal(res.reposts, 1);
+  const rows = log.communitySince(2);
+  assert.equal(rows.length, 2);
+  assert.equal(rows.find((r) => r.id === "telegram:1:2").dup_of, "telegram:1:1");
+  assert.equal(log.health().counts.community, 2);
+  // old report purged
+  log.saveReports([{ ...base, id: "telegram:1:9", msgId: 9, publishMs: now - 20 * 86400e3, sig: "old" }]);
+  assert.equal(log.communitySince(14).some((r) => r.id === "telegram:1:9"), false);
 });

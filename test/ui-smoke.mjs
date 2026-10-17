@@ -11,6 +11,7 @@ const html = fs.readFileSync(root + "index.html", "utf8").replace(/<script[^>]*s
 const leaflet = fs.readFileSync(path.join(dir, "node_modules/leaflet/dist/leaflet.js"), "utf8");
 const app = fs.readFileSync(root + "app.js", "utf8");
 const rainjs = fs.readFileSync(root + "rain.js", "utf8");
+const communityjs = fs.readFileSync(root + "community.js", "utf8");
 const RGmod = await import(root + "lib/radar-geo.js");
 const PLACES = fs.readFileSync(root + "data/places.json", "utf8");
 
@@ -37,6 +38,7 @@ w.fetch = async (url) => {
   if (u.startsWith("/api/metar")) return ok(METARS);
   if (u.startsWith("/data/places.json")) return ok(JSON.parse(PLACES));
   if (u.startsWith("/api/scan")) return ok(SCAN);
+  if (u.startsWith("/api/community")) return ok(COMMUNITY);
   if (u.includes("geocoding-api")) return ok({ results: [{ id: 1, name: "Dibba Al-Fujairah", latitude: 25.59, longitude: 56.26, admin1: "Fujairah" }] });
   if (u.includes("api.open-meteo.com")) { const n = (u.match(/latitude=([^&]*)/)[1].split(",")).length; return ok(omFor(n)); }
   if (u.startsWith("/api/validation")) return ok({ pairs: 12, rainEvents: 2, enough: false, matrix: { hit: 1, miss: 1, falseAlarm: 0, correctNeg: 10 }, echoRateWhenDry: 0, radarSampleStates: { ok: 50, http_404: 3 }, collectingSince: now - 86400000 });
@@ -55,11 +57,32 @@ const SCAN = {
     { ms: now - (scenario === "stale" ? 102 : 20) * 60000, ok: okAll, noise: 0, errs: "", clusters: scenario === "rain" ? [blob(25.12, 56.45, 5)] : [] },
   ],
 };
+const COMMUNITY = {
+  now, days: 2,
+  reports: [
+    { id: "telegram:-1:1", source: "telegram", channel: "Ali Test Weather", channelUser: "alitestwx", url: "https://t.me/alitestwx/1",
+      text: "rain on Fujairah", lang: "en", event: "flood", events: ["flood","rain"],
+      place: { id: "fujairah-city", name: "Fujairah", em: "fu", lat: 25.1164, lon: 56.3414 }, emirate: "fu",
+      publishMs: now - 5*60000, observedMs: now - 5*60000, forwarded: false, forwardMs: null, duplicateOf: null, hasLocation: true,
+      verify: scenario === "rain" ? "radar-corroborated" : "unverified", verifyDetail: { radar: "echo", metar: "none", stationKm: 1 } },
+    { id: "telegram:-1:2", source: "telegram", channel: "Ali Test Weather", channelUser: "alitestwx", url: "https://t.me/alitestwx/2",
+      text: "hello everyone", lang: "en", event: "unknown", events: [], place: null, emirate: null,
+      publishMs: now - 9*60000, observedMs: null, forwarded: false, forwardMs: null, duplicateOf: null, hasLocation: false,
+      verify: "missing_location", verifyDetail: { status: "missing_location" } },
+    { id: "telegram:-1:1b", source: "telegram", channel: "Ali Test Weather", channelUser: "alitestwx", url: "https://t.me/alitestwx/1",
+      text: "rain on Fujairah", lang: "en", event: "flood", events: ["flood"], place: { id: "fujairah-city", name: "Fujairah", em: "fu", lat: 25.1164, lon: 56.3414 }, emirate: "fu",
+      publishMs: now - 4*60000, observedMs: null, forwarded: false, forwardMs: null, duplicateOf: "telegram:-1:1", hasLocation: true,
+      verify: "duplicate", verifyDetail: {} },
+  ],
+  channels: [{ channel: "Ali Test Weather", user: "alitestwx", url: "https://t.me/alitestwx" }],
+  counts: { total: 3, located: 1, duplicates: 1 },
+  disclaimer: "Community reports are public social-media posts, not measurements.",
+};
 w.RG = RGmod;
 w.navigator.geolocation = { getCurrentPosition: (okcb) => okcb({ coords: { latitude: 25.0, longitude: 56.0 } }) };
 w.Image = class { set src(_) { setTimeout(() => this.onerror && this.onerror(), 0); } };
 w.eval(leaflet);
-w.eval(app + "\n" + rainjs);
+w.eval(app + "\n" + rainjs + "\n" + communityjs);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 await sleep(600);
 const $ = (id) => w.document.getElementById(id);
@@ -68,6 +91,13 @@ const fails = []; const check = (c, m) => { if (!c) fails.push(m); console.log((
 const txt = () => w.document.body.textContent;
 check($("pills").textContent.includes("Radar") && $("pills").textContent.includes("not connected"), "status pills show radar + official warnings not connected");
 check($("chips").querySelectorAll(".chip").length === 12, "12 city chips");
+const comTxt = () => $("community").textContent;
+check(comTxt().includes("Community Rain Reports") && comTxt().includes("بلاغات"), "Community section renders bilingual title");
+check(comTxt().includes("not measurements"), "community disclaimer shown");
+check(!![...$("community").querySelectorAll("a")].find((a) => a.href === "https://t.me/alitestwx/1"), "original-post link present");
+check(comTxt().includes("Fujairah"), "located community report shown");
+check($("community").querySelectorAll(".crep").length === 2, "duplicate hidden by default (2 of 3 shown)");
+check(/No location|no location/.test(comTxt()), "missing-location report labelled");
 const rainTxt = () => $("rain").textContent;
 check(rainTxt().includes("Where's the Rain?"), "Where's the Rain section renders");
 check(rainTxt().includes("NOT AVAILABLE") && rainTxt().includes("Official warnings"), "safety check says official warnings are NOT available");
@@ -86,6 +116,7 @@ if (scenario === "rain") {
   check(!!fjCard && fjCard.textContent.includes("Fujairah"), "Fujairah card present");
   check(!![...$("rain").querySelectorAll("a")].find((a) => a.href.includes("google.com/maps/dir/?api=1&destination=25.")) && !![...$("rain").querySelectorAll("a")].find((a) => a.href.startsWith("https://maps.apple.com/?daddr=")), "Google + Apple directions links");
   check(rainTxt().includes("Do not drive into rain"), "echo location carries a do-not-drive warning");
+  check($("community").querySelector(".cst.radar") !== null, "community report shows radar-corroborated badge");
   check(!/\bdry\b/i.test(rainTxt().replace(/not prove it is dry|dry from no coverage/g, "")), "never claims 'dry'");
   check($("rain").querySelector(".safety.amber, .safety.red") !== null && rainTxt().includes("thunderstorm") || true, "safety banner present");
   check($("rain").querySelector(".safety.red") !== null, "airport thunderstorm report turns safety banner red");
@@ -105,6 +136,7 @@ if (scenario === "rain") {
   check($("overview").textContent.includes("No rain reported at any airport station"), "dry scenario: overview says no rain reported");
   check(rainTxt().includes("No radar echo detected near any of the") && rainTxt().includes("does not prove it is dry"), "no-echo state is not worded as dry");
   check($("rain").querySelectorAll(".cand").length > 0 && rainTxt().includes("Outing ideas"), "outing candidates offered when radar fresh and no echo");
+  check($("community").querySelector(".cst.unverified") !== null, "dry scenario: community report shown unverified");
   check(rainTxt().includes("lower-risk") || rainTxt().includes("candidates"), "outing section says candidates, not guarantee");
 }
 check($("detail").textContent.includes("Hatta") === false || true, "detail renders");

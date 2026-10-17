@@ -18,7 +18,37 @@ export class ValidationLog extends DurableObject {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS scanframe(frame_ms INTEGER PRIMARY KEY, saved_ms INTEGER, ok TEXT, noise INTEGER, errs TEXT, clusters TEXT)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS coverage(id INTEGER PRIMARY KEY, saved_ms INTEGER, state TEXT, share REAL, errs TEXT, runs TEXT)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS runs(at_ms INTEGER PRIMARY KEY, metar_n INTEGER, frames_n INTEGER, errors TEXT)`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS community(
+      id TEXT PRIMARY KEY, source TEXT, channel TEXT, channel_user TEXT, msg_id INTEGER,
+      text TEXT, lang TEXT, event TEXT, events TEXT,
+      place_id TEXT, place_name TEXT, em TEXT, lat REAL, lon REAL,
+      publish_ms INTEGER, observed_ms INTEGER, forwarded INTEGER, forward_ms INTEGER,
+      url TEXT, sig TEXT, dup_of TEXT, has_location INTEGER, created_ms INTEGER)`);
   }
+
+  // ---- community rain reports (Telegram etc.) ----
+  // rows: already-parsed report objects. Returns {saved, duplicate, reposts}. Repost = same signature seen before.
+  saveReports(rows) {
+    let saved = 0, duplicate = 0, reposts = 0;
+    for (const r of rows) {
+      const exists = this.sql.exec("SELECT 1 FROM community WHERE id=?", r.id).toArray().length;
+      if (exists) { duplicate++; continue; }
+      let dupOf = null;
+      if (r.sig) { const prior = this.sql.exec("SELECT id FROM community WHERE sig=? AND id<>? ORDER BY publish_ms ASC LIMIT 1", r.sig, r.id).toArray()[0]; if (prior) { dupOf = prior.id; reposts++; } }
+      this.sql.exec("INSERT INTO community VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        r.id, r.source, r.channel, r.channelUser, r.msgId, r.text, r.lang, r.event, JSON.stringify(r.events || []),
+        r.placeId, r.placeName, r.em, r.lat, r.lon, r.publishMs, r.observedMs, r.forwarded ? 1 : 0, r.forwardMs,
+        r.url, r.sig, dupOf, r.hasLocation ? 1 : 0, Date.now());
+      saved++;
+    }
+    this.sql.exec("DELETE FROM community WHERE publish_ms < ?", Date.now() - 14 * 86400e3);
+    return { saved, duplicate, reposts };
+  }
+  communitySince(days = 2) {
+    const since = Date.now() - days * 86400e3;
+    return this.sql.exec("SELECT * FROM community WHERE publish_ms > ? ORDER BY publish_ms DESC LIMIT 400", since).toArray();
+  }
+  metarsSince(ms) { return this.sql.exec("SELECT station, obs_ms AS obsMs, rain, thunder FROM metar WHERE obs_ms > ?", ms).toArray(); }
 
   knownFrames() {
     const since = Date.now() - 6 * 3600e3;
@@ -78,8 +108,10 @@ export class ValidationLog extends DurableObject {
       runs: this.sql.exec("SELECT COUNT(*) AS n FROM runs").one().n,
     };
     counts.scanFrames = this.sql.exec("SELECT COUNT(*) AS n FROM scanframe").one().n;
+    counts.community = this.sql.exec("SELECT COUNT(*) AS n FROM community").one().n;
+    const lastReport = this.sql.exec("SELECT publish_ms, channel FROM community ORDER BY publish_ms DESC LIMIT 1").toArray()[0] || null;
     const cov = this.sql.exec("SELECT saved_ms, state, share FROM coverage WHERE id=1").toArray()[0] || null;
     const lastScan = this.sql.exec("SELECT frame_ms, ok, noise, length(clusters) AS bytes FROM scanframe ORDER BY frame_ms DESC LIMIT 1").toArray()[0] || null;
-    return { last, counts, coverage: cov, lastScan };
+    return { last, counts, coverage: cov, lastScan, lastReport };
   }
 }

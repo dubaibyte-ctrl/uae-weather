@@ -1,6 +1,6 @@
 /* App-shell cache only. Weather data, radar tiles and API calls are never cached here. */
-const CACHE = "uae-weather-shell-v2";
-const SHELL = ["./", "app.js", "rain.js", "lib/radar-geo.js", "app.css", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png"];
+const CACHE = "uae-weather-shell-v3";
+const SHELL = ["./", "app.js", "rain.js", "community.js", "lib/radar-geo.js", "app.css", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener("activate", (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener("fetch", (e) => {
