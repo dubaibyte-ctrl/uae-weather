@@ -233,18 +233,29 @@ function show(m,c){o.hidden=false;o.className='out '+c;o.textContent=m;}
 
 async function handleTelegramAdmin(req, env, u) {
   const stub = logStub(env);
+  const action = u.searchParams.get("action") || (req.method === "POST" ? "setup" : "status");
   let provided = u.searchParams.get("token");
   if (!provided && req.method === "POST") { const body = await req.json().catch(() => ({})); provided = body && body.token; }
   const current = await getToken(env, stub);
-  if (!current) {
-    if (!provided) return json({ error: "First-time setup: open this URL with ?token=<your bot token>&action=setup to store it." }, 400);
-    await stub.cfgSet("botToken", provided);        // bootstrap: store the owner's token server-side, once
-  } else if (provided !== current) {
-    return json({ error: "unauthorized" }, 401);
-  } else if (!(await stub.cfgGet("botToken")) && typeof env.TELEGRAM_BOT_TOKEN === "string") {
-    await stub.cfgSet("botToken", env.TELEGRAM_BOT_TOKEN);   // migrate an env-provided token into the DO
+
+  if (action === "setup") {
+    if (!provided) return json({ error: "Paste your bot token to connect." }, 400);
+    const me = await tg(provided, "getMe");                 // validate the token with Telegram before storing it
+    if (!me.ok) return json({ error: "Telegram rejected that token. Copy the FULL token from BotFather (it looks like 123456789:AA…) and paste it again." }, 400);
+    if (current && current !== provided) {                  // a different token is stored: only overwrite if it no longer works (recovery)
+      const curOk = await tg(current, "getMe");
+      if (curOk.ok) return json({ error: "A working bot is already connected. Open /api/telegram-admin?token=<current>&action=reset first to change it." }, 409);
+    }
+    await stub.cfgSet("botToken", provided);                // store the validated token (survives all deploys)
+    await stub.cfgSet("botUsername", me.result && me.result.username ? me.result.username : null);
+  } else {
+    if (!current || provided !== current) return json({ error: "unauthorized" }, 401);
   }
-  const action = u.searchParams.get("action") || "status";
+
+  if (action === "reset") {                                 // clear token + webhook state to start over
+    for (const k of ["botToken", "webhookSecret", "webhookOk", "webhookFor", "botUsername"]) await stub.cfgSet(k, null);
+    return json({ ok: true, note: "Cleared. Open the setup page to reconnect." });
+  }
   if (action === "reset-auth") { await stub.cfgSet("authChats", []); return json({ ok: true, authChats: [], note: "Channel authorization cleared. The next channel to post will be auto-authorized." }); }
   const st = await ensureWebhook(env, stub, action === "setup");
   return json({ ok: true, action, ...st, authorizedChats: ((await stub.cfgGet("authChats")) || []).map((c) => ({ id: c.id, title: c.title })) });
@@ -294,7 +305,7 @@ export default {
       const stub = logStub(env);
       const [h, token, wok, buser, wstatus, authChats] = await Promise.all([stub.health(), getToken(env, stub), stub.cfgGet("webhookOk"), stub.cfgGet("botUsername"), stub.cfgGet("webhookStatus"), stub.cfgGet("authChats")]);
       const tgStatus = { configured: !!token, registered: !!wok, botUsername: buser || null, webhook: wstatus || null, authorizedChats: (authChats || []).map((c) => ({ id: c.id, title: c.title })) };
-      return json({ now: Date.now(), build: "2026-10-17-tg6", ...h, telegram: tgStatus }, 200, { "cache-control": "no-store" });
+      return json({ now: Date.now(), build: "2026-10-17-tg7", ...h, telegram: tgStatus }, 200, { "cache-control": "no-store" });
     }
     if (u.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);
