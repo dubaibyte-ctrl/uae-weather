@@ -28,16 +28,19 @@ Automatic intake of rainfall reports from **authorized** community sources. Tele
 - **Parsing** (`src/lib/community.js`): detects rain/hail/thunder/flood in Arabic + English and matches UAE place names (incl. neighbourhoods like Al Rashidiya, Al Dhaid, Al Khawaneej, Hatta) to the hyperlocal DB via a generated gazetteer (`src/lib/places-data.js`, built by `tools/build-gazetteer.mjs`). One message → one row per matched area.
 - **Dedupe:** same message id ignored; identical text+place from a new id flagged as a repost; forwards of older content are marked and never counted as a fresh observation; messages with no matched place are kept but flagged "No location".
 - **Verification** (never asserts rain from a post): each located report is cross-checked against the stored radar scan and airport METARs around its time and labelled **officially-confirmed** (airport precip nearby), **radar-corroborated** (echo at the spot), **conflicting** (report claims rain but radar+airport are clear), or **unverified**. Duplicates are labelled as such.
-- **Secrets never in git:** `TELEGRAM_WEBHOOK_SECRET` is a Wrangler secret; `.dev.vars` (git-ignored) holds it locally; see `.dev.vars.example`. The bot token is only used once to register the webhook from your machine and is never stored in the Worker or the repo.
+- **No secrets in git, and none needed in the Cloudflare dashboard:** the bot token is stored in the Durable Object via the one-time setup link; the webhook secret is generated and stored by the Worker itself. `.dev.vars` (git-ignored) only provides a local-dev fallback token. Nothing is ever written to the repo.
 - **Status:** the pipeline is built and deployed. **Storm Centre is NOT integrated** — that needs the owner's authorization. Validate with a test channel you own first (setup steps below).
 
-### Telegram setup (your steps — see also the chat instructions)
-1. **@BotFather** → `/newbot` → copy the bot **token** (keep it private).
+### Telegram setup (one link, no dashboard secrets)
+The bot token is stored **inside the Durable Object** (set once), so it survives every GitHub/Cloudflare deploy — unlike dashboard variables/secrets, which Workers Builds resets on each build.
+1. **@BotFather** → `/newbot` (or `/revoke` to rotate) → copy the bot **token**.
 2. Create a **channel** you own; add the bot as an **administrator**.
-3. Set the Worker secret: `npx wrangler secret put TELEGRAM_WEBHOOK_SECRET` (enter a long random string).
-4. Register the webhook (run once, replacing placeholders — token stays on your machine):
-   `curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://uae-weather.dubaibyte.workers.dev/api/telegram-webhook&secret_token=<SECRET>"`
-5. Post a test message in the channel (e.g. "أمطار غزيرة على حتا") and open `/api/community`.
+3. Open this once in your **own browser** (token goes in your address bar, never in the repo), replacing the placeholder:
+   `https://uae-weather.dubaibyte.workers.dev/api/telegram-admin?token=<BOT_TOKEN>&action=setup`
+   The Worker stores the token server-side, generates its own webhook secret, registers the webhook, and returns a status JSON. Re-opening it later requires the same token.
+4. Post a test message in the channel (e.g. `أمطار غزيرة على حتا`). The first channel to post is auto-authorized (trust-on-first-use); others are ignored. Check `/api/community` or `/api/health` (`telegram` block).
+
+Rotating the token: `/revoke` in BotFather, then open the setup link once with the new token.
 
 ## Other legitimate sources (researched, optional)
 - **YouTube Data API v3**: polling a channel's uploads playlist (`playlistItems.list`) costs ~1 quota unit against a 10,000/day default, with a free Google API key — a viable low-cost secondary source for weather-community video titles/descriptions. Not yet wired in.

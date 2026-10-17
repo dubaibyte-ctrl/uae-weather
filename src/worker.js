@@ -137,9 +137,16 @@ function reportsFromMessage(msg, source = "telegram") {
 // The public URL the webhook must point at. Overridable with env.PUBLIC_BASE_URL; defaults to the known deployment.
 const workerBase = (env) => (env.PUBLIC_BASE_URL || "https://uae-weather.dubaibyte.workers.dev").replace(/\/$/, "");
 
-// Minimal Telegram Bot API call. The token is a Cloudflare secret; it is never logged, returned, or sent anywhere but api.telegram.org.
-async function tg(env, method, params = {}) {
-  const token = env.TELEGRAM_BOT_TOKEN;
+// The bot token lives in the Durable Object (set once via the admin endpoint), so it survives every GitHub/Cloudflare
+// deploy — unlike dashboard vars/secrets, which Workers Builds resets. env.TELEGRAM_BOT_TOKEN is only a local-dev fallback.
+async function getToken(env, stub) {
+  const stored = await stub.cfgGet("botToken");
+  if (stored) return stored;
+  return typeof env.TELEGRAM_BOT_TOKEN === "string" && env.TELEGRAM_BOT_TOKEN ? env.TELEGRAM_BOT_TOKEN : null;
+}
+
+// Minimal Telegram Bot API call. The token is never logged, returned, or sent anywhere but api.telegram.org.
+async function tg(token, method, params = {}) {
   if (!token) return { ok: false, error: "no token" };
   const url = `https://api.telegram.org/bot${token}/${method}`;
   try {
@@ -151,7 +158,8 @@ async function tg(env, method, params = {}) {
 // Self-service webhook setup: generate+store our own secret, register the webhook, cache a sanitized status.
 // Idempotent and safe to call from cron. Returns a sanitized status object (no token, no secret).
 async function ensureWebhook(env, stub, force = false) {
-  if (!env.TELEGRAM_BOT_TOKEN) return { configured: false };
+  const token = await getToken(env, stub);
+  if (!token) return { configured: false };
   let secret = await stub.cfgGet("webhookSecret");
   let freshSecret = false;
   if (!secret) { secret = await stub.cfgSet("webhookSecret", (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, "")); freshSecret = true; }
@@ -159,11 +167,11 @@ async function ensureWebhook(env, stub, force = false) {
   const already = (await stub.cfgGet("webhookFor")) === target && (await stub.cfgGet("webhookOk"));
   // Re-register whenever we just minted a secret, so Telegram's secret_token always matches what the webhook checks.
   if (force || freshSecret || !already) {
-    const res = await tg(env, "setWebhook", { url: target, secret_token: secret, allowed_updates: ["channel_post", "edited_channel_post", "message"], max_connections: 20 });
+    const res = await tg(token, "setWebhook", { url: target, secret_token: secret, allowed_updates: ["channel_post", "edited_channel_post", "message"], max_connections: 20 });
     await stub.cfgSet("webhookOk", !!res.ok); await stub.cfgSet("webhookFor", target);
-    if (!(await stub.cfgGet("botUsername"))) { const me = await tg(env, "getMe"); if (me.ok) await stub.cfgSet("botUsername", me.result.username); }
+    if (!(await stub.cfgGet("botUsername"))) { const me = await tg(token, "getMe"); if (me.ok) await stub.cfgSet("botUsername", me.result.username); }
   }
-  const info = await tg(env, "getWebhookInfo");
+  const info = await tg(token, "getWebhookInfo");
   const status = info.ok ? { url: info.result.url, pending: info.result.pending_update_count, lastError: info.result.last_error_message || null, lastErrorAt: info.result.last_error_date ? info.result.last_error_date * 1000 : null } : { error: "getWebhookInfo failed" };
   await stub.cfgSet("webhookStatus", { ...status, checkedAt: Date.now() });
   return { configured: true, registered: await stub.cfgGet("webhookOk"), botUsername: await stub.cfgGet("botUsername"), status };
@@ -192,12 +200,22 @@ async function handleTelegramWebhook(req, env) {
   return json({ ok: true });
 }
 
-// Token-protected admin endpoint (the one-time authorization). The token is passed by the owner in their OWN browser; it
-// is compared to the stored secret and never echoed back.
+// Token-protected admin endpoint and one-time token bootstrap. The owner opens it in their OWN browser with ?token=<bot token>.
+// First call with no token yet stored: the token is saved into the Durable Object (survives deploys) — trust-on-first-set.
+// Later calls must present the same token. The token is never echoed back.
 async function handleTelegramAdmin(req, env, u) {
-  if (!env.TELEGRAM_BOT_TOKEN) return json({ error: "Add the TELEGRAM_BOT_TOKEN secret in Cloudflare first." }, 503);
-  if (u.searchParams.get("token") !== env.TELEGRAM_BOT_TOKEN) return json({ error: "unauthorized" }, 401);
-  const stub = logStub(env), action = u.searchParams.get("action") || "status";
+  const stub = logStub(env);
+  const provided = u.searchParams.get("token");
+  const current = await getToken(env, stub);
+  if (!current) {
+    if (!provided) return json({ error: "First-time setup: open this URL with ?token=<your bot token>&action=setup to store it." }, 400);
+    await stub.cfgSet("botToken", provided);        // bootstrap: store the owner's token server-side, once
+  } else if (provided !== current) {
+    return json({ error: "unauthorized" }, 401);
+  } else if (!(await stub.cfgGet("botToken")) && typeof env.TELEGRAM_BOT_TOKEN === "string") {
+    await stub.cfgSet("botToken", env.TELEGRAM_BOT_TOKEN);   // migrate an env-provided token into the DO
+  }
+  const action = u.searchParams.get("action") || "status";
   if (action === "reset-auth") { await stub.cfgSet("authChats", []); return json({ ok: true, authChats: [], note: "Channel authorization cleared. The next channel to post will be auto-authorized." }); }
   const st = await ensureWebhook(env, stub, action === "setup");
   return json({ ok: true, action, ...st, authorizedChats: ((await stub.cfgGet("authChats")) || []).map((c) => ({ id: c.id, title: c.title })) });
@@ -244,9 +262,9 @@ export default {
     if (u.pathname === "/api/scan") return handleScan(env);
     if (u.pathname === "/api/health") {
       const stub = logStub(env);
-      const [h, wok, buser, wstatus, authChats] = await Promise.all([stub.health(), stub.cfgGet("webhookOk"), stub.cfgGet("botUsername"), stub.cfgGet("webhookStatus"), stub.cfgGet("authChats")]);
-      const tgStatus = { configured: !!env.TELEGRAM_BOT_TOKEN, registered: !!wok, botUsername: buser || null, webhook: wstatus || null, authorizedChats: (authChats || []).map((c) => ({ id: c.id, title: c.title })) };
-      return json({ now: Date.now(), build: "2026-10-17-tg4", ...h, telegram: tgStatus }, 200, { "cache-control": "no-store" });
+      const [h, token, wok, buser, wstatus, authChats] = await Promise.all([stub.health(), getToken(env, stub), stub.cfgGet("webhookOk"), stub.cfgGet("botUsername"), stub.cfgGet("webhookStatus"), stub.cfgGet("authChats")]);
+      const tgStatus = { configured: !!token, registered: !!wok, botUsername: buser || null, webhook: wstatus || null, authorizedChats: (authChats || []).map((c) => ({ id: c.id, title: c.title })) };
+      return json({ now: Date.now(), build: "2026-10-17-tg5", ...h, telegram: tgStatus }, 200, { "cache-control": "no-store" });
     }
     if (u.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);
