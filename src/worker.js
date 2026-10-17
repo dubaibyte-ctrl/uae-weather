@@ -244,7 +244,7 @@ export default {
       const stub = logStub(env);
       const h = await stub.health();
       const tgStatus = { configured: !!env.TELEGRAM_BOT_TOKEN, registered: !!stub.cfgGet("webhookOk"), botUsername: stub.cfgGet("botUsername") || null, webhook: stub.cfgGet("webhookStatus"), authorizedChats: (stub.cfgGet("authChats") || []).map((c) => ({ id: c.id, title: c.title })) };
-      return json({ now: Date.now(), ...h, telegram: tgStatus }, 200, { "cache-control": "no-store" });
+      return json({ now: Date.now(), build: "2026-10-17-tg2", ...h, telegram: tgStatus }, 200, { "cache-control": "no-store" });
     }
     if (u.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);
