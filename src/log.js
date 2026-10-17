@@ -18,6 +18,7 @@ export class ValidationLog extends DurableObject {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS scanframe(frame_ms INTEGER PRIMARY KEY, saved_ms INTEGER, ok TEXT, noise INTEGER, errs TEXT, clusters TEXT)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS coverage(id INTEGER PRIMARY KEY, saved_ms INTEGER, state TEXT, share REAL, errs TEXT, runs TEXT)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS runs(at_ms INTEGER PRIMARY KEY, metar_n INTEGER, frames_n INTEGER, errors TEXT)`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS config(k TEXT PRIMARY KEY, v TEXT)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS community(
       id TEXT PRIMARY KEY, source TEXT, channel TEXT, channel_user TEXT, msg_id INTEGER,
       text TEXT, lang TEXT, event TEXT, events TEXT,
@@ -25,6 +26,13 @@ export class ValidationLog extends DurableObject {
       publish_ms INTEGER, observed_ms INTEGER, forwarded INTEGER, forward_ms INTEGER,
       url TEXT, sig TEXT, dup_of TEXT, has_location INTEGER, created_ms INTEGER)`);
   }
+
+  // ---- server-managed config (webhook secret, authorized chats, webhook status). Never exposed raw to the public. ----
+  cfgGet(k) { const r = this.sql.exec("SELECT v FROM config WHERE k=?", k).toArray()[0]; return r ? JSON.parse(r.v) : null; }
+  cfgSet(k, v) { this.sql.exec("INSERT OR REPLACE INTO config VALUES(?,?)", k, JSON.stringify(v)); return v; }
+  // Trust-on-first-use: the first channel to post becomes the authorized one; after that only authorized chats are kept.
+  authorizeChat(id, title) { const a = this.cfgGet("authChats") || []; if (!a.some((c) => String(c.id) === String(id))) { a.push({ id: String(id), title, ts: Date.now() }); this.cfgSet("authChats", a); } return a; }
+  isAuthorized(id) { const a = this.cfgGet("authChats") || []; return a.length === 0 || a.some((c) => String(c.id) === String(id)); }
 
   // ---- community rain reports (Telegram etc.) ----
   // rows: already-parsed report objects. Returns {saved, duplicate, reposts}. Repost = same signature seen before.

@@ -75,3 +75,18 @@ test("community reports: insert, dedupe by id, repost detection by signature, re
   log.saveReports([{ ...base, id: "telegram:1:9", msgId: 9, publishMs: now - 20 * 86400e3, sig: "old" }]);
   assert.equal(log.communitySince(14).some((r) => r.id === "telegram:1:9"), false);
 });
+
+test("config store + trust-on-first-use channel authorization", () => {
+  const log = makeLog();
+  assert.equal(log.cfgGet("webhookSecret"), null);
+  log.cfgSet("webhookSecret", "abc123");
+  assert.equal(log.cfgGet("webhookSecret"), "abc123");
+  assert.equal(log.isAuthorized("-100500"), true, "empty authChats = accept (pre-auth)");
+  log.authorizeChat("-100500", "Ali Test");
+  assert.equal(log.isAuthorized("-100500"), true);
+  assert.equal(log.isAuthorized("-100999"), false, "after first channel authorized, others rejected");
+  log.authorizeChat("-100500", "Ali Test");                 // idempotent
+  assert.equal((log.cfgGet("authChats") || []).length, 1);
+  log.cfgSet("authChats", []);
+  assert.equal(log.isAuthorized("-100999"), true, "reset re-opens trust-on-first-use");
+});
