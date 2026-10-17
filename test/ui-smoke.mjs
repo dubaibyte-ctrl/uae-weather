@@ -74,8 +74,16 @@ const COMMUNITY = {
       publishMs: now - 4*60000, observedMs: null, forwarded: false, forwardMs: null, duplicateOf: "telegram:-1:1", hasLocation: true,
       verify: "duplicate", verifyDetail: {} },
   ],
+  groups: [
+    { id: "telegram:-1:1", event: "flood", place: { id: "fujairah-city", name: "Fujairah", em: "fu", lat: 25.1164, lon: 56.3414 }, emirate: "fu",
+      text: "rain on Fujairah", lang: "en", publishMs: now - 4*60000, observedMs: null,
+      verify: scenario === "rain" ? "radar-corroborated" : "unverified", verifyDetail: { radar: "echo", metar: "none", stationKm: 1 },
+      sources: [ { source: "telegram", channel: "Ali Test Weather", url: "https://t.me/alitestwx/1", publishMs: now - 5*60000, verify: scenario === "rain" ? "radar-corroborated" : "unverified" },
+                 { source: "youtube", channel: "Storm Centre (YouTube)", url: "https://www.youtube.com/watch?v=abc", publishMs: now - 4*60000, verify: "unverified" } ],
+      sourceCount: 2, memberIds: ["telegram:-1:1", "youtube:abc:fujairah-city"] },
+  ],
   channels: [{ channel: "Ali Test Weather", user: "alitestwx", url: "https://t.me/alitestwx" }],
-  counts: { total: 3, located: 1, duplicates: 1 },
+  counts: { total: 3, events: 1, located: 1, duplicates: 1, multiSource: 1 },
   disclaimer: "Community reports are public social-media posts, not measurements.",
 };
 w.RG = RGmod;
@@ -95,9 +103,10 @@ const comTxt = () => $("community").textContent;
 check(comTxt().includes("Community Rain Reports") && comTxt().includes("بلاغات"), "Community section renders bilingual title");
 check(comTxt().includes("not measurements"), "community disclaimer shown");
 check(!![...$("community").querySelectorAll("a")].find((a) => a.href === "https://t.me/alitestwx/1"), "original-post link present");
-check(comTxt().includes("Fujairah"), "located community report shown");
-check($("community").querySelectorAll(".crep").length === 2, "duplicate hidden by default (2 of 3 shown)");
-check(/No location|no location/.test(comTxt()), "missing-location report labelled");
+check(comTxt().includes("Fujairah"), "located community event shown");
+check($("community").querySelectorAll(".crep").length === 1, "one card per grouped event (duplicate not a card)");
+check(comTxt().includes("Reported by") && !![...$("community").querySelectorAll("a")].find((a) => a.href === "https://www.youtube.com/watch?v=abc"), "multi-source provenance: YouTube + Telegram both linked");
+check($("community").querySelector(".nsrc") !== null, "multi-source badge shown");
 const rainTxt = () => $("rain").textContent;
 check(rainTxt().includes("Where's the Rain?"), "Where's the Rain section renders");
 check(rainTxt().includes("NOT AVAILABLE") && rainTxt().includes("Official warnings"), "safety check says official warnings are NOT available");

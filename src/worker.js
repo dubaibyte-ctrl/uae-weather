@@ -10,7 +10,8 @@ import { STATIONS, STATION_IDS, fetchMetars } from "./lib/metar.js";
 import { fetchIndex, probeFrame } from "./lib/radar.js";
 import { scanFrame, scanCoverage } from "./lib/scan.js";
 import { GRID, ECHO_ALPHA, MIN_CLUSTER_PX } from "../public/lib/radar-geo.js";
-import { extractReport, reportSignature, verifyReport } from "./lib/community.js";
+import { extractReport, reportSignature, verifyReport, classifyItem, buildRows } from "./lib/community.js";
+import { PULL_CONNECTORS } from "./lib/connectors.js";
 
 export { ValidationLog };
 
@@ -54,7 +55,32 @@ async function collect(env) {
   await stub.record({ metars, radar, errors, at });
   try { await collectScan(stub, errors); } catch (e) { errors.push("scan: " + (e.message || e)); }
   try { await ensureWebhook(env, stub); } catch (e) { errors.push("telegram: " + (e.message || e)); } // self-heals the webhook once the token secret exists
+  try { await runConnectors(stub, errors); } catch (e) { errors.push("connectors: " + (e.message || e)); }
   if (errors.length) await stub.noteErrors(at, errors);
+}
+
+// Run each pull connector in isolation: one failure is recorded in that connector's health and never affects the
+// others, Telegram, radar or METAR. Accepted items flow through the same parser / verifier / Community pipeline.
+async function runConnectors(stub, errors) {
+  for (const c of PULL_CONNECTORS) {
+    const prev = (await stub.getConnState(c.id)) || {};
+    try {
+      const items = await c.fetchItems();
+      let accepted = 0, skipped = 0; const rows = [];
+      for (const it of items) {
+        const cls = classifyItem(it.title);
+        if (!cls.accept) { skipped++; continue; }
+        rows.push(...buildRows({ source: c.source, extId: it.extId, channel: c.channel, channelUser: c.channelUser, url: it.url, title: it.title, publishedMs: it.publishedMs, observedMs: null }));
+        accepted++;
+      }
+      const res = rows.length ? await stub.saveReports(rows) : { saved: 0 };
+      const newest = items.reduce((m, it) => Math.max(m, it.publishedMs), prev.newestItemMs || 0);
+      await stub.setConnState(c.id, { lastPollMs: Date.now(), ok: true, items: items.length, newestItemMs: newest, lastExtId: items[0]?.extId || prev.lastExtId || null, accepted: (prev.accepted || 0) + accepted, skipped: (prev.skipped || 0) + skipped, saved: (prev.saved || 0) + (res.saved || 0), lastError: null });
+    } catch (e) {
+      await stub.setConnState(c.id, { ...prev, lastPollMs: Date.now(), ok: false, lastError: String(e.message || e).slice(0, 140) });
+      errors.push(`connector ${c.id}: ${String(e.message || e).slice(0, 80)}`);
+    }
+  }
 }
 
 // Radar scan, kept light for the free plan's CPU limit: one heavy job per run. Coverage layer first (and daily after),
@@ -261,6 +287,27 @@ async function handleTelegramAdmin(req, env, u) {
   return json({ ok: true, action, ...st, authorizedChats: ((await stub.cfgGet("authChats")) || []).map((c) => ({ id: c.id, title: c.title })) });
 }
 
+// Collapse located, non-duplicate reports into one card per real-world event (group_id), preserving EVERY
+// contributing source + URL so the UI can show "reported by YouTube + Telegram" instead of discarding evidence.
+function buildGroups(reports) {
+  const RANK = { "officially-confirmed": 4, "radar-corroborated": 3, unverified: 2, conflicting: 1, missing_location: 0 };
+  const map = new Map();
+  for (const r of reports.filter((x) => x.hasLocation && !x.duplicateOf)) {
+    const g = map.get(r.groupId) || { id: r.groupId, members: [] };
+    g.members.push(r); map.set(r.groupId, g);
+  }
+  const groups = [];
+  for (const g of map.values()) {
+    const members = g.members.slice().sort((a, b) => b.publishMs - a.publishMs);
+    const rep = members[0];
+    const verify = members.reduce((best, m) => (RANK[m.verify] > RANK[best] ? m.verify : best), "conflicting");
+    const seen = new Set(), sources = [];
+    for (const m of members) { const k = m.source + "|" + (m.url || m.channel); if (seen.has(k)) continue; seen.add(k); sources.push({ source: m.source, channel: m.channel, url: m.url, publishMs: m.publishMs, verify: m.verify }); }
+    groups.push({ id: g.id, event: rep.event, place: rep.place, emirate: rep.emirate, text: rep.text, lang: rep.lang, publishMs: rep.publishMs, observedMs: rep.observedMs, verify, verifyDetail: rep.verifyDetail, sources, sourceCount: sources.length, memberIds: members.map((m) => m.id) });
+  }
+  return groups.sort((a, b) => b.publishMs - a.publishMs);
+}
+
 async function handleCommunity(env, u) {
   const days = Math.min(Math.max(parseInt(u.searchParams.get("days") || "2", 10) || 2, 1), 14);
   const stub = logStub(env);
@@ -275,15 +322,16 @@ async function handleCommunity(env, u) {
       place: r.place_id ? { id: r.place_id, name: r.place_name, em: r.em, lat: r.lat, lon: r.lon } : null,
       emirate: r.em, publishMs: r.publish_ms, observedMs: r.observed_ms,
       forwarded: !!r.forwarded, forwardMs: r.forward_ms,
-      duplicateOf: r.dup_of, hasLocation: !!r.has_location,
+      duplicateOf: r.dup_of, hasLocation: !!r.has_location, groupId: r.group_id || r.id,
       verify: r.dup_of ? "duplicate" : v.status, verifyDetail: v,
     };
   });
+  const groups = buildGroups(reports);
   // chatId is parsed from the stored id ("telegram:<chatId>:<msg>[:place]") so a private channel's id is discoverable for the allowlist.
   const channels = [...new Map(rows.map((r) => [r.channel, { channel: r.channel, user: r.channel_user, chatId: (r.id.split(":")[1] || null), url: r.channel_user ? "https://t.me/" + r.channel_user : null }])).values()];
   return json({
-    now: Date.now(), days, reports, channels,
-    counts: { total: reports.length, located: reports.filter((r) => r.hasLocation && !r.duplicateOf).length, duplicates: reports.filter((r) => r.duplicateOf).length },
+    now: Date.now(), days, reports, groups, channels,
+    counts: { total: reports.length, events: groups.length, located: reports.filter((r) => r.hasLocation && !r.duplicateOf).length, duplicates: reports.filter((r) => r.duplicateOf).length, multiSource: groups.filter((g) => g.sources.length > 1).length },
     disclaimer: "Community reports are public social-media posts, not measurements. They are shown as unverified unless independently corroborated by radar or airport observations. Storm Centre is NOT integrated until its owner authorises access.",
   }, 200, { "cache-control": "no-store" });
 }
@@ -305,7 +353,8 @@ export default {
       const stub = logStub(env);
       const [h, token, wok, buser, wstatus, authChats] = await Promise.all([stub.health(), getToken(env, stub), stub.cfgGet("webhookOk"), stub.cfgGet("botUsername"), stub.cfgGet("webhookStatus"), stub.cfgGet("authChats")]);
       const tgStatus = { configured: !!token, registered: !!wok, botUsername: buser || null, webhook: wstatus || null, authorizedChats: (authChats || []).map((c) => ({ id: c.id, title: c.title })) };
-      return json({ now: Date.now(), build: "2026-10-17-tg7", ...h, telegram: tgStatus }, 200, { "cache-control": "no-store" });
+      const connectors = await stub.connStates(PULL_CONNECTORS.map((c) => c.id));
+      return json({ now: Date.now(), build: "2026-10-17-src1", ...h, telegram: tgStatus, connectors }, 200, { "cache-control": "no-store" });
     }
     if (u.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);

@@ -100,3 +100,6 @@ a.btn.warn{border-color:var(--bad);color:var(--bad)}
 .cst.unverified,.cst.missing{background:var(--unk)}.cst.duplicate{background:var(--unk)}
 button.btn.cfollow{cursor:pointer}
 button.btn.cfollow.on{background:var(--brand);color:var(--bg);border-color:var(--brand)}
+.crtop .nsrc{font-size:11px;border:1px solid var(--rad);color:var(--rad);border-radius:999px;padding:1px 7px;margin-inline-start:auto}
+.srcs{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:2px}
+a.btn.sm,span.btn.sm{padding:3px 8px;min-height:0;font-size:12px}

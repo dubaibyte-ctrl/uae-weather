@@ -42,7 +42,18 @@ Object.assign(I18N.ar, {
   c_follow: "＋ متابعة", c_following: "✓ متابَع", c_notify_hint: "تابع المناطق لتصلك تنبيهات داخل التطبيق بالبلاغات القريبة الجديدة أثناء فتحه.",
 });
 
-const C = { data: null, status: "loading", showDups: false, favOnly: false, layer: null, notified: {} };
+Object.assign(I18N.en, {
+  src_telegram: "Telegram", src_youtube: "YouTube", src_instagram: "Instagram",
+  c_reportedby: "Reported by", c_nsources: "{0} sources", c_counts2: "{0} events · {1} reports · {2} duplicates hidden",
+  c_multi: "· {0} confirmed by more than one source",
+});
+Object.assign(I18N.ar, {
+  src_telegram: "تيليجرام", src_youtube: "يوتيوب", src_instagram: "إنستغرام",
+  c_reportedby: "المصادر", c_nsources: "{0} مصادر", c_counts2: "{0} حدث · {1} بلاغ · {2} مكرر مخفي",
+  c_multi: "· {0} مؤكدة من أكثر من مصدر",
+});
+const srcLabel = (s) => t("src_" + s) || s;
+const C = { data: null, status: "loading", showDups: false, favOnly: false, layer: null, notified: {}, sel: null };
 C.follows = ls("cfollows") || [];
 const ST_CLASS = { "officially-confirmed": "confirmed", "radar-corroborated": "radar", unverified: "unverified", conflicting: "conflicting", missing_location: "missing", duplicate: "duplicate" };
 const ST_LABEL = { "officially-confirmed": "st_confirmed", "radar-corroborated": "st_radar", unverified: "st_unverified", conflicting: "st_conflicting", missing_location: "st_missing", duplicate: "st_duplicate" };
@@ -50,27 +61,32 @@ const ST_DESC = { "officially-confirmed": "st_confirmed_d", "radar-corroborated"
 
 async function loadCommunity() {
   const j = await getJSON("Community reports", "/api/community?days=2");
-  if (!j || !Array.isArray(j.reports)) { C.status = "error"; C.data = j || null; return renderCommunity(); }
+  if (!j || !Array.isArray(j.groups)) { C.status = "error"; C.data = j || null; return renderCommunity(); }
   C.data = j; C.status = "ok"; renderCommunity();
 }
 function evLabel(e) { return t("ev_" + (["rain", "hail", "thunder", "flood"].includes(e) ? e : "unknown")); }
-function reportCard(r) {
-  const st = r.verify, cls = ST_CLASS[st] || "unverified";
-  const place = r.place ? esc(r.place.name) : t("c_noloc");
-  const em = r.emirate ? (I18N[lang].em_au && false) : "";
-  let h = `<div class="crep ${cls}"><div class="crtop"><span class="cst ${cls}">${t(ST_LABEL[st] || "st_unverified")}</span><b>${evLabel(r.event)}</b><span class="muted">· ${place}</span></div>`;
-  h += `<div class="ctext">${esc(r.text)}</div>`;
-  h += `<div class="muted sm">${t(ST_DESC[st] || "st_unverified_d", r.verifyDetail && r.verifyDetail.stationKm != null ? r.verifyDetail.stationKm : "")}</div>`;
-  const times = [`${t("c_pub", ageTxt(ageMin(r.publishMs)))}`];
-  if (r.observedMs) times.push(t("c_obs", fmtT(r.observedMs)));
-  if (r.forwarded) times.push("⤴ " + t("c_fwd"));
+const VCOL = (v) => v === "officially-confirmed" ? "#0b5cad" : v === "radar-corroborated" ? "#7b3fc4" : v === "conflicting" ? "#b26a00" : "#5d727a";
+// One card per real-world EVENT (group), listing every source that reported it — no evidence is discarded.
+function groupCard(g) {
+  const st = g.verify, cls = ST_CLASS[st] || "unverified";
+  const place = g.place ? esc(g.place.name) : t("c_noloc");
+  let h = `<div class="crep ${cls}"><div class="crtop"><span class="cst ${cls}">${t(ST_LABEL[st] || "st_unverified")}</span><b>${evLabel(g.event)}</b><span class="muted">· ${place}</span>${g.sourceCount > 1 ? `<span class="nsrc">${t("c_nsources", g.sourceCount)}</span>` : ""}</div>`;
+  h += `<div class="ctext">${esc(g.text)}</div>`;
+  h += `<div class="muted sm">${t(ST_DESC[st] || "st_unverified_d", g.verifyDetail && g.verifyDetail.stationKm != null ? g.verifyDetail.stationKm : "")}</div>`;
+  const times = [t("c_pub", ageTxt(ageMin(g.publishMs)))];
+  if (g.observedMs) times.push(t("c_obs", fmtT(g.observedMs)));
   h += `<div class="muted sm">${times.join(" · ")}</div>`;
-  h += `<div class="acts"><span class="muted sm">${t("c_via", esc(r.channel))}</span>`;
-  if (r.url) h += `<a class="btn" href="${esc(r.url)}" target="_blank" rel="noopener">${t("c_open")}</a>`;
-  if (r.place) { const dirAct = `https://www.google.com/maps/dir/?api=1&destination=${r.place.lat},${r.place.lng || r.place.lon}`; h += `<a class="btn" href="${esc(dirAct)}" target="_blank" rel="noopener">${t("r_gmaps")}</a>`; }
-  if (r.place) { const f = C.follows.includes(r.place.id); h += `<button class="btn cfollow ${f ? "on" : ""}" data-fid="${esc(r.place.id)}">${f ? t("c_following") : t("c_follow")}</button>`; }
+  h += `<div class="srcs"><span class="muted sm">${t("c_reportedby")}:</span> ` + g.sources.map((s) => s.url
+    ? `<a class="btn sm" href="${esc(s.url)}" target="_blank" rel="noopener">${esc(srcLabel(s.source))} ↗</a>`
+    : `<span class="btn sm">${esc(srcLabel(s.source))}</span>`).join(" ") + `</div>`;
+  h += `<div class="acts">`;
+  if (g.place) { const dir = `https://www.google.com/maps/dir/?api=1&destination=${g.place.lat},${g.place.lon}`; h += `<a class="btn" href="${esc(dir)}" target="_blank" rel="noopener">${t("r_gmaps")}</a>`; }
+  if (g.place) { const f = C.follows.includes(g.place.id); h += `<button class="btn cfollow ${f ? "on" : ""}" data-fid="${esc(g.place.id)}">${f ? t("c_following") : t("c_follow")}</button>`; }
   h += `</div></div>`;
   return h;
+}
+function dupLine(r) {
+  return `<div class="muted sm" style="opacity:.7">↳ ${t("st_duplicate")}: ${esc(srcLabel(r.source))} · ${esc(r.place ? r.place.name : "")} · ${ageTxt(ageMin(r.publishMs))}${r.url ? ` · <a href="${esc(r.url)}" target="_blank" rel="noopener">${t("c_open")}</a>` : ""}</div>`;
 }
 function renderCommunity() {
   const box = $("community"); if (!box) return;
@@ -79,14 +95,15 @@ function renderCommunity() {
   if (C.status === "error") return void (box.innerHTML = h + `<p class="fail">${t("c_unavail")}</p>`);
   const d = C.data;
   h += `<div class="safety amber" style="margin:8px 0"><div class="sm">${t("c_disclaimer")}</div></div>`;
-  // sources
   h += `<div class="muted sm">${t("c_src")}: ` + (d.channels.length ? d.channels.map((c) => c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.channel)}</a>` : esc(c.channel)).join(" · ") : t("c_none_src")) + `</div>`;
-  const visible = d.reports.filter((r) => C.showDups || !r.duplicateOf).filter((r) => !C.favOnly || (r.place && C.follows.includes(r.place.id)));
   if (!d.reports.length) { box.innerHTML = h + `<p class="muted" style="margin-top:8px">${t("c_empty")}</p>`; drawCommunityLayer(); return; }
-  h += `<div class="muted sm">${t("c_counts", d.counts.total, d.counts.located, d.counts.duplicates)}</div>`;
+  const groups = (d.groups || []).filter((g) => !C.favOnly || (g.place && C.follows.includes(g.place.id)));
+  const multi = (d.counts.multiSource || 0);
+  h += `<div class="muted sm">${t("c_counts2", d.counts.events, d.counts.located, d.counts.duplicates)}${multi ? " " + t("c_multi", multi) : ""}</div>`;
   h += `<div class="seg"><button id="cDups" class="${C.showDups ? "on" : ""}">${C.showDups ? t("c_hidedups") : t("c_showdups")}</button><button id="cFav" class="${C.favOnly ? "on" : ""}">${C.favOnly ? t("c_filter_all") : t("c_filter_fav")}</button></div>`;
   h += `<div class="muted sm">${t("c_notify_hint")}</div>`;
-  h += visible.map(reportCard).join("") || `<p class="muted">—</p>`;
+  h += groups.map(groupCard).join("") || `<p class="muted">—</p>`;
+  if (C.showDups) h += d.reports.filter((r) => r.duplicateOf).map(dupLine).join("");
   box.innerHTML = h;
   const bd = $("cDups"); if (bd) bd.addEventListener("click", () => { C.showDups = !C.showDups; renderCommunity(); });
   const bf = $("cFav"); if (bf) bf.addEventListener("click", () => { C.favOnly = !C.favOnly; renderCommunity(); });
@@ -94,28 +111,25 @@ function renderCommunity() {
     const id = b.dataset.fid; C.follows = C.follows.includes(id) ? C.follows.filter((x) => x !== id) : C.follows.concat(id);
     ls("cfollows", C.follows); renderCommunity();
   }));
-  drawCommunityLayer(); maybeNotifyCommunity(visible);
+  drawCommunityLayer(); maybeNotifyCommunity(groups);
 }
 function drawCommunityLayer() {
   if (!S.map || !window.L) return;
   if (!C.layer) C.layer = L.layerGroup().addTo(S.map);
   C.layer.clearLayers();
   if (!C.data || C.status !== "ok") return;
-  const seen = {};
-  C.data.reports.filter((r) => !r.duplicateOf && r.place).forEach((r) => {
-    const key = r.place.id; if (seen[key]) return; seen[key] = 1;
-    const col = r.verify === "officially-confirmed" ? "#0b5cad" : r.verify === "radar-corroborated" ? "#7b3fc4" : r.verify === "conflicting" ? "#b26a00" : "#5d727a";
-    L.marker([r.place.lat, r.place.lng || r.place.lon], { icon: L.divIcon({ className: "", html: `<div style="width:14px;height:14px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:${col};border:2px solid #fff"></div>`, iconSize: [14, 14] }) })
-      .bindPopup(`<b>${esc(r.place.name)}</b><br>${evLabel(r.event)} · ${t(ST_LABEL[r.verify] || "st_unverified")}<br>${esc(r.channel)}${r.url ? `<br><a href="${esc(r.url)}" target="_blank" rel="noopener">${t("c_open")}</a>` : ""}`)
+  (C.data.groups || []).filter((g) => g.place).forEach((g) => {
+    L.marker([g.place.lat, g.place.lon], { icon: L.divIcon({ className: "", html: `<div style="width:14px;height:14px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:${VCOL(g.verify)};border:2px solid #fff"></div>`, iconSize: [14, 14] }) })
+      .bindPopup(`<b>${esc(g.place.name)}</b><br>${evLabel(g.event)} · ${t(ST_LABEL[g.verify] || "st_unverified")}<br>${g.sources.map((s) => esc(srcLabel(s.source)) + (s.url ? ` <a href="${esc(s.url)}" target="_blank" rel="noopener">↗</a>` : "")).join(" · ")}`)
       .addTo(C.layer);
   });
 }
-function maybeNotifyCommunity(visible) {
+function maybeNotifyCommunity(groups) {
   if (!ls("notify") || !("Notification" in window) || Notification.permission !== "granted") return;
-  visible.forEach((r) => {
-    if (!r.place || !C.follows.includes(r.place.id) || r.duplicateOf) return;
-    if (C.notified[r.id]) return; C.notified[r.id] = 1;
-    try { new Notification(t("c_title"), { body: `${evLabel(r.event)} · ${r.place.name} (${t(ST_LABEL[r.verify] || "st_unverified")})` }); } catch (_) {}
+  groups.forEach((g) => {
+    if (!g.place || !C.follows.includes(g.place.id)) return;
+    if (C.notified[g.id]) return; C.notified[g.id] = 1;
+    try { new Notification(t("c_title"), { body: `${evLabel(g.event)} · ${g.place.name} (${t(ST_LABEL[g.verify] || "st_unverified")})` }); } catch (_) {}
   });
 }
 window.loadCommunity = loadCommunity; window.renderCommunity = renderCommunity;

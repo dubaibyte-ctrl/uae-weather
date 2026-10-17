@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "test": "node --test test/lib.test.js test/scan.test.js test/community.test.js && node --import ./test/loader.mjs --test test/log.test.js"
+    "test": "node --test test/lib.test.js test/scan.test.js test/community.test.js test/connectors.test.js && node --import ./test/loader.mjs --test test/log.test.js"
   },
   "devDependencies": {
     "wrangler": "^4"

@@ -46,6 +46,9 @@ const KW = {
 };
 // Arabic "برد" also means "cold", so hail needs a rain/thunder word present too unless it's the explicit phrase.
 function detectEvents(normEnTxt, normArTxt) {
+  // Drop negated precipitation ("بدون مطر" / "no rain") so a clear-sky clip isn't read as a rain report.
+  normArTxt = normArTxt.replace(/(بدون|بلا|دون|من دون|لا)\s+(امطار|مطر|هطول|برد|سيول)/g, " ");
+  normEnTxt = normEnTxt.replace(/\b(no|without|zero)\s+(rain|rainfall|precipitation|hail|flood)\b/g, " ");
   const hits = new Set();
   for (const [ev, langs] of Object.entries(KW)) {
     if (langs.en.some((w) => new RegExp("\\b" + w.replace(/ /g, "\\s+") + "\\b").test(normEnTxt))) hits.add(ev);
@@ -121,4 +124,42 @@ export function verifyReport(report, scanFrames, metars) {
   else if (claimsRain && out.metar === "dry" && out.radar === "none") out.status = "conflicting";
   else out.status = "unverified";
   return out;
+}
+
+// ---- generic connector support: classify a public item (e.g. a YouTube title) and build report rows ----
+// Only genuine UAE weather OBSERVATIONS pass: a recognizable UAE place + an observable event, and not a
+// forecast / advert / archival clip / non-UAE report. Pure + testable; shares the same parser as Telegram.
+const FOREIGN = ["السعودية", "مكة", "المدينة المنورة", "جدة", "الرياض", "الدمام", "القصيم", "سلطنة عمان", "مسقط", "قطر", "الدوحة", "الكويت", "البحرين", "المنامة", "اليمن", "صنعاء", "مصر", "العراق", "سوريا", "لبنان", "السودان", "saudi", "makkah", "mecca", "jeddah", "riyadh", "oman", "muscat", "qatar", "doha", "kuwait", "bahrain", "yemen", "egypt"];
+const FORECAST = ["توقعات", "متوقع", "المتوقع", "غدا", "الغد", "خلال الساعات القادمة", "ستشهد", "forecast", "expected", "outlook"];
+const PROMO = ["اشترك", "للاعلان", "للإعلان", "اعلان", "إعلان", "للتواصل", "رابط الاشتراك", "رعاية", "subscribe", "sponsor"];
+const OLD = ["ارشيف", "أرشيف", "العام الماضي", "قبل سنة", "قبل عام", "منذ سنوات", "throwback", "archive"];
+const UAE_MARK = ["الامارات", "uae", "emirates"];
+const hasAny = (arr, na, en) => arr.some((w) => (/[؀-ۿ]/.test(w) ? na.includes(normAr(w)) : en.includes(w)));
+
+export function classifyItem(title) {
+  const raw = title || "", en = " " + normEn(raw) + " ", na = " " + normAr(raw) + " ";
+  const hasUAE = UAE_MARK.some((w) => (/[؀-ۿ]/.test(w) ? na.includes(normAr(w)) : en.includes(w)));
+  if (hasAny(FOREIGN, na, en) && !hasUAE) return { accept: false, reason: "non_uae" };
+  if (hasAny(FORECAST, na, en)) return { accept: false, reason: "forecast" };
+  if (hasAny(PROMO, na, en)) return { accept: false, reason: "promo" };
+  if (hasAny(OLD, na, en)) return { accept: false, reason: "old" };
+  const parsed = extractReport(raw);
+  if (!parsed.hasLocation) return { accept: false, reason: "no_uae_location", parsed };
+  if (parsed.event === "unknown") return { accept: false, reason: "no_observable_event", parsed };
+  return { accept: true, reason: "ok", parsed };
+}
+
+// Build one report row per matched UAE place from a connector item. observedMs stays null unless the source
+// supplies a precise observation time (YouTube titles carry a date only, so publication time is authoritative).
+export function buildRows(opts) {
+  const { source, extId, channel, channelUser = null, url = null, title, publishedMs, observedMs = null } = opts;
+  const parsed = extractReport(title || "");
+  return parsed.places.map((place) => ({
+    id: `${source}:${extId}:${place.id}`,
+    source, channel, channelUser, msgId: null,
+    text: (title || "").slice(0, 1000), lang: parsed.lang, event: parsed.event, events: parsed.events,
+    placeId: place.id, placeName: place.en, em: place.em, lat: place.lat, lon: place.lon,
+    publishMs: publishedMs, observedMs, forwarded: false, forwardMs: null, url,
+    sig: reportSignature(title || "", place.id), hasLocation: true,
+  }));
 }

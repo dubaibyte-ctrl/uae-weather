@@ -4,6 +4,7 @@ import { DurableObject } from "cloudflare:workers";
 import { score } from "./lib/score.js";
 
 const KEEP_DAYS = 90;
+const GROUP_WINDOW_MS = 90 * 60 * 1000;   // same place + event within 90 min = one event (cross-source grouping)
 
 export class ValidationLog extends DurableObject {
   constructor(ctx, env) {
@@ -24,8 +25,15 @@ export class ValidationLog extends DurableObject {
       text TEXT, lang TEXT, event TEXT, events TEXT,
       place_id TEXT, place_name TEXT, em TEXT, lat REAL, lon REAL,
       publish_ms INTEGER, observed_ms INTEGER, forwarded INTEGER, forward_ms INTEGER,
-      url TEXT, sig TEXT, dup_of TEXT, has_location INTEGER, created_ms INTEGER)`);
+      url TEXT, sig TEXT, dup_of TEXT, has_location INTEGER, created_ms INTEGER, group_id TEXT)`);
+    // Existing instances created the table before group_id existed; add it in place (ignored if already present).
+    try { this.sql.exec("ALTER TABLE community ADD COLUMN group_id TEXT"); } catch (e) { /* column exists */ }
   }
+
+  // Connector cursor/health state (not credentials) lives in config: conn:<id> -> {lastPollMs, ok, newestItemMs, lastExtId, accepted, skipped, saved, lastError}
+  getConnState(id) { return this.cfgGet("conn:" + id) || null; }
+  setConnState(id, st) { return this.cfgSet("conn:" + id, st); }
+  connStates(ids) { return ids.map((id) => ({ id, ...(this.cfgGet("conn:" + id) || {}) })); }
 
   // ---- server-managed config (webhook secret, authorized chats, webhook status). Never exposed raw to the public. ----
   cfgGet(k) { const r = this.sql.exec("SELECT v FROM config WHERE k=?", k).toArray()[0]; return r ? JSON.parse(r.v) : null; }
@@ -43,10 +51,19 @@ export class ValidationLog extends DurableObject {
       if (exists) { duplicate++; continue; }
       let dupOf = null;
       if (r.sig) { const prior = this.sql.exec("SELECT id FROM community WHERE sig=? AND id<>? ORDER BY publish_ms ASC LIMIT 1", r.sig, r.id).toArray()[0]; if (prior) { dupOf = prior.id; reposts++; } }
-      this.sql.exec("INSERT INTO community VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      // Cross-source grouping: same place + same event type within GROUP_WINDOW = one real-world event, even across
+      // sources (Telegram, YouTube…). A wider time gap is treated as a separate storm, never merged.
+      let groupId = null;
+      if (r.hasLocation && !dupOf) {
+        const g = this.sql.exec(
+          "SELECT group_id FROM community WHERE place_id=? AND event=? AND dup_of IS NULL AND group_id IS NOT NULL AND ABS(publish_ms-?)<=? ORDER BY ABS(publish_ms-?) ASC LIMIT 1",
+          r.placeId, r.event, r.publishMs, GROUP_WINDOW_MS, r.publishMs).toArray()[0];
+        groupId = g ? g.group_id : r.id;        // start a new group keyed by this row's id
+      }
+      this.sql.exec("INSERT INTO community VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         r.id, r.source, r.channel, r.channelUser, r.msgId, r.text, r.lang, r.event, JSON.stringify(r.events || []),
         r.placeId, r.placeName, r.em, r.lat, r.lon, r.publishMs, r.observedMs, r.forwarded ? 1 : 0, r.forwardMs,
-        r.url, r.sig, dupOf, r.hasLocation ? 1 : 0, Date.now());
+        r.url, r.sig, dupOf, r.hasLocation ? 1 : 0, Date.now(), groupId);
       saved++;
     }
     this.sql.exec("DELETE FROM community WHERE publish_ms < ?", Date.now() - 14 * 86400e3);

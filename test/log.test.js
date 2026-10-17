@@ -90,3 +90,23 @@ test("config store + trust-on-first-use channel authorization", () => {
   log.cfgSet("authChats", []);
   assert.equal(log.isAuthorized("-100999"), true, "reset re-opens trust-on-first-use");
 });
+
+test("cross-source grouping: same place+event within window shares group_id; a later storm does not", () => {
+  const log = makeLog();
+  const row = (id, source, placeId, event, publishMs) => ({ id, source, channel: source, channelUser: null, msgId: null, text: "rain " + placeId, lang: "ar", event, events: [event], placeId, placeName: placeId, em: "du", lat: 25, lon: 55, publishMs, observedMs: null, forwarded: 0, forwardMs: null, url: "u/" + id, sig: "sig-" + id, hasLocation: true });
+  const base = now;
+  log.saveReports([row("telegram:1:hatta", "telegram", "hatta", "rain", base)]);
+  log.saveReports([row("youtube:v1:hatta", "youtube", "hatta", "rain", base + 10 * 60000)]);   // +10 min, same place+event
+  log.saveReports([row("youtube:v2:hatta", "youtube", "hatta", "rain", base + 5 * 3600e3)]);    // +5 h = separate storm
+  const rows = log.communitySince(2);
+  const g = (id) => rows.find((r) => r.id === id).group_id;
+  assert.equal(g("telegram:1:hatta"), g("youtube:v1:hatta"), "same event grouped across sources");
+  assert.notEqual(g("telegram:1:hatta"), g("youtube:v2:hatta"), "separate storm not merged");
+});
+
+test("connector state round-trips", () => {
+  const log = makeLog();
+  assert.equal(log.getConnState("youtube:storm_centre"), null);
+  log.setConnState("youtube:storm_centre", { ok: true, accepted: 3, skipped: 2 });
+  assert.deepEqual(log.connStates(["youtube:storm_centre"])[0], { id: "youtube:storm_centre", ok: true, accepted: 3, skipped: 2 });
+});
