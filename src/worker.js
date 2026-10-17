@@ -152,24 +152,24 @@ async function tg(env, method, params = {}) {
 // Idempotent and safe to call from cron. Returns a sanitized status object (no token, no secret).
 async function ensureWebhook(env, stub, force = false) {
   if (!env.TELEGRAM_BOT_TOKEN) return { configured: false };
-  let secret = stub.cfgGet("webhookSecret");
-  if (!secret) secret = stub.cfgSet("webhookSecret", (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, ""));
+  let secret = await stub.cfgGet("webhookSecret");
+  if (!secret) secret = await stub.cfgSet("webhookSecret", (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, ""));
   const target = workerBase(env) + "/api/telegram-webhook";
-  const already = stub.cfgGet("webhookFor") === target && stub.cfgGet("webhookOk");
+  const already = (await stub.cfgGet("webhookFor")) === target && (await stub.cfgGet("webhookOk"));
   if (force || !already) {
     const res = await tg(env, "setWebhook", { url: target, secret_token: secret, allowed_updates: ["channel_post", "edited_channel_post", "message"], max_connections: 20 });
-    stub.cfgSet("webhookOk", !!res.ok); stub.cfgSet("webhookFor", target);
-    if (!stub.cfgGet("botUsername")) { const me = await tg(env, "getMe"); if (me.ok) stub.cfgSet("botUsername", me.result.username); }
+    await stub.cfgSet("webhookOk", !!res.ok); await stub.cfgSet("webhookFor", target);
+    if (!(await stub.cfgGet("botUsername"))) { const me = await tg(env, "getMe"); if (me.ok) await stub.cfgSet("botUsername", me.result.username); }
   }
   const info = await tg(env, "getWebhookInfo");
   const status = info.ok ? { url: info.result.url, pending: info.result.pending_update_count, lastError: info.result.last_error_message || null, lastErrorAt: info.result.last_error_date ? info.result.last_error_date * 1000 : null } : { error: "getWebhookInfo failed" };
-  stub.cfgSet("webhookStatus", { ...status, checkedAt: Date.now() });
-  return { configured: true, registered: stub.cfgGet("webhookOk"), botUsername: stub.cfgGet("botUsername"), status };
+  await stub.cfgSet("webhookStatus", { ...status, checkedAt: Date.now() });
+  return { configured: true, registered: await stub.cfgGet("webhookOk"), botUsername: await stub.cfgGet("botUsername"), status };
 }
 
 async function handleTelegramWebhook(req, env) {
   const stub = logStub(env);
-  const secret = stub.cfgGet("webhookSecret");
+  const secret = await stub.cfgGet("webhookSecret");
   if (!secret) return json({ error: "webhook not configured" }, 503);
   if (req.headers.get("x-telegram-bot-api-secret-token") !== secret) return json({ error: "unauthorized" }, 401);
   let update;
@@ -180,8 +180,8 @@ async function handleTelegramWebhook(req, env) {
     for (const m of msgs) {
       const chat = m.chat || {};
       // Trust-on-first-use: first channel seen becomes authorized; afterwards only authorized chats are stored.
-      if (!stub.isAuthorized(chat.id)) continue;
-      stub.authorizeChat(chat.id, chat.title || chat.username || String(chat.id));
+      if (!(await stub.isAuthorized(chat.id))) continue;
+      await stub.authorizeChat(chat.id, chat.title || chat.username || String(chat.id));
       keep.push(m);
     }
     const rows = keep.flatMap((m) => reportsFromMessage(m));
@@ -196,9 +196,9 @@ async function handleTelegramAdmin(req, env, u) {
   if (!env.TELEGRAM_BOT_TOKEN) return json({ error: "Add the TELEGRAM_BOT_TOKEN secret in Cloudflare first." }, 503);
   if (u.searchParams.get("token") !== env.TELEGRAM_BOT_TOKEN) return json({ error: "unauthorized" }, 401);
   const stub = logStub(env), action = u.searchParams.get("action") || "status";
-  if (action === "reset-auth") { stub.cfgSet("authChats", []); return json({ ok: true, authChats: [], note: "Channel authorization cleared. The next channel to post will be auto-authorized." }); }
+  if (action === "reset-auth") { await stub.cfgSet("authChats", []); return json({ ok: true, authChats: [], note: "Channel authorization cleared. The next channel to post will be auto-authorized." }); }
   const st = await ensureWebhook(env, stub, action === "setup");
-  return json({ ok: true, action, ...st, authorizedChats: (stub.cfgGet("authChats") || []).map((c) => ({ id: c.id, title: c.title })) });
+  return json({ ok: true, action, ...st, authorizedChats: ((await stub.cfgGet("authChats")) || []).map((c) => ({ id: c.id, title: c.title })) });
 }
 
 async function handleCommunity(env, u) {
@@ -242,9 +242,9 @@ export default {
     if (u.pathname === "/api/scan") return handleScan(env);
     if (u.pathname === "/api/health") {
       const stub = logStub(env);
-      const h = await stub.health();
-      const tgStatus = { configured: !!env.TELEGRAM_BOT_TOKEN, registered: !!stub.cfgGet("webhookOk"), botUsername: stub.cfgGet("botUsername") || null, webhook: stub.cfgGet("webhookStatus"), authorizedChats: (stub.cfgGet("authChats") || []).map((c) => ({ id: c.id, title: c.title })) };
-      return json({ now: Date.now(), build: "2026-10-17-tg2", ...h, telegram: tgStatus }, 200, { "cache-control": "no-store" });
+      const [h, wok, buser, wstatus, authChats] = await Promise.all([stub.health(), stub.cfgGet("webhookOk"), stub.cfgGet("botUsername"), stub.cfgGet("webhookStatus"), stub.cfgGet("authChats")]);
+      const tgStatus = { configured: !!env.TELEGRAM_BOT_TOKEN, registered: !!wok, botUsername: buser || null, webhook: wstatus || null, authorizedChats: (authChats || []).map((c) => ({ id: c.id, title: c.title })) };
+      return json({ now: Date.now(), build: "2026-10-17-tg3", ...h, telegram: tgStatus }, 200, { "cache-control": "no-store" });
     }
     if (u.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);
