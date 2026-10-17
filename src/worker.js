@@ -203,9 +203,38 @@ async function handleTelegramWebhook(req, env) {
 // Token-protected admin endpoint and one-time token bootstrap. The owner opens it in their OWN browser with ?token=<bot token>.
 // First call with no token yet stored: the token is saved into the Durable Object (survives deploys) — trust-on-first-set.
 // Later calls must present the same token. The token is never echoed back.
+// A clean one-field setup page: paste the bot token, click Connect. The token is sent in the POST body (not the URL,
+// so it is not logged in query strings) and stored server-side in the Durable Object.
+function handleSetupPage() {
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Connect Telegram — UAE Rain Explorer</title><style>
+body{font:16px/1.5 system-ui,sans-serif;max-width:560px;margin:0 auto;padding:24px;background:#0e1a1f;color:#e6eef0}
+h1{font-size:20px;color:#7cc4d6} input{width:100%;padding:12px;border-radius:10px;border:1px solid #28404a;background:#16262d;color:#e6eef0;font:inherit}
+button{margin-top:12px;padding:12px 18px;border-radius:10px;border:0;background:#0f4c5c;color:#fff;font:inherit;cursor:pointer;min-height:44px}
+.out{margin-top:16px;padding:12px;border-radius:10px;white-space:pre-wrap;word-break:break-word;font:13px/1.4 ui-monospace,Menlo,monospace}
+.ok{background:#12304f;border:1px solid #6db3ff} .err{background:#3a1414;border:1px solid #ff8a80} .muted{color:#9bb0b8;font-size:13px}</style></head>
+<body><h1>Connect Telegram bot</h1>
+<p class="muted">Paste your BotFather token for @DubaibyteWeatherBot and press Connect. The token is sent securely and stored inside the app — it never appears in the address bar and is never shared in chat.</p>
+<input id="t" type="password" autocomplete="off" placeholder="123456789:AA..." aria-label="Bot token">
+<button id="b">Connect &amp; register webhook</button>
+<div id="o" class="out muted" hidden></div>
+<script>
+const b=document.getElementById('b'),t=document.getElementById('t'),o=document.getElementById('o');
+b.onclick=async()=>{const tok=t.value.trim();if(!tok){show('Please paste the token first.','err');return;}
+b.disabled=true;b.textContent='Connecting…';
+try{const r=await fetch('/api/telegram-admin?action=setup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:tok})});const j=await r.json();
+if(j.ok&&j.registered){show('✅ Connected as @'+(j.botUsername||'your bot')+'. Webhook registered. Now post a test message in your channel, then return to chat.','ok');t.value='';}
+else{show('⚠ '+(j.error||JSON.stringify(j)),'err');}}catch(e){show('Network error: '+e.message,'err');}
+b.disabled=false;b.textContent='Connect & register webhook';};
+function show(m,c){o.hidden=false;o.className='out '+c;o.textContent=m;}
+</script></body></html>`;
+  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+}
+
 async function handleTelegramAdmin(req, env, u) {
   const stub = logStub(env);
-  const provided = u.searchParams.get("token");
+  let provided = u.searchParams.get("token");
+  if (!provided && req.method === "POST") { const body = await req.json().catch(() => ({})); provided = body && body.token; }
   const current = await getToken(env, stub);
   if (!current) {
     if (!provided) return json({ error: "First-time setup: open this URL with ?token=<your bot token>&action=setup to store it." }, 400);
@@ -252,6 +281,7 @@ export default {
   async fetch(req, env, ctx) {
     const u = new URL(req.url);
     if (u.pathname === "/api/telegram-webhook" && req.method === "POST") return handleTelegramWebhook(req, env);
+    if (u.pathname === "/api/telegram-setup" && req.method === "GET") return handleSetupPage();
     if (u.pathname === "/api/telegram-admin") return handleTelegramAdmin(req, env, u);
     if (u.pathname === "/api/community") return handleCommunity(env, u);
     if (u.pathname === "/api/metar") return handleMetar(req, ctx);
@@ -264,7 +294,7 @@ export default {
       const stub = logStub(env);
       const [h, token, wok, buser, wstatus, authChats] = await Promise.all([stub.health(), getToken(env, stub), stub.cfgGet("webhookOk"), stub.cfgGet("botUsername"), stub.cfgGet("webhookStatus"), stub.cfgGet("authChats")]);
       const tgStatus = { configured: !!token, registered: !!wok, botUsername: buser || null, webhook: wstatus || null, authorizedChats: (authChats || []).map((c) => ({ id: c.id, title: c.title })) };
-      return json({ now: Date.now(), build: "2026-10-17-tg5", ...h, telegram: tgStatus }, 200, { "cache-control": "no-store" });
+      return json({ now: Date.now(), build: "2026-10-17-tg6", ...h, telegram: tgStatus }, 200, { "cache-control": "no-store" });
     }
     if (u.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);
