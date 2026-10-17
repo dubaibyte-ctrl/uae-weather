@@ -133,6 +133,16 @@ function reportsFromMessage(msg, source = "telegram") {
   }));
 }
 
+// Optional channel allowlist (set TELEGRAM_ALLOWED_CHATS to a comma/space list of chat ids and/or @usernames).
+// Unset = accept any chat the bot is in (safe default before setup). Set = only those chats are stored.
+function chatAllowed(env, chat) {
+  const raw = (env.TELEGRAM_ALLOWED_CHATS || "").trim();
+  if (!raw) return true;
+  const allow = raw.split(/[\s,]+/).filter(Boolean).map((s) => s.replace(/^@/, "").toLowerCase());
+  const id = String(chat?.id ?? "").toLowerCase(), uname = (chat?.username || "").toLowerCase();
+  return allow.includes(id) || (uname && allow.includes(uname));
+}
+
 async function handleTelegramWebhook(req, env) {
   // Secret header set when the webhook is registered (setWebhook?secret_token=...). Token itself is never needed here.
   const secret = env.TELEGRAM_WEBHOOK_SECRET;
@@ -141,7 +151,7 @@ async function handleTelegramWebhook(req, env) {
   let update;
   try { update = await req.json(); } catch { return json({ ok: true }); }   // always 200 so Telegram doesn't retry-storm
   try {
-    const msgs = [update.channel_post, update.edited_channel_post, update.message].filter(Boolean);
+    const msgs = [update.channel_post, update.edited_channel_post, update.message].filter(Boolean).filter((m) => chatAllowed(env, m.chat));
     const rows = msgs.flatMap((m) => reportsFromMessage(m));
     if (rows.length) await logStub(env).saveReports(rows);
   } catch (e) { /* swallow: never fail the webhook */ }
@@ -166,7 +176,8 @@ async function handleCommunity(env, u) {
       verify: r.dup_of ? "duplicate" : v.status, verifyDetail: v,
     };
   });
-  const channels = [...new Map(rows.filter((r) => !r.dup_of).map((r) => [r.channel, { channel: r.channel, user: r.channel_user, url: r.channel_user ? "https://t.me/" + r.channel_user : null }])).values()];
+  // chatId is parsed from the stored id ("telegram:<chatId>:<msg>[:place]") so a private channel's id is discoverable for the allowlist.
+  const channels = [...new Map(rows.map((r) => [r.channel, { channel: r.channel, user: r.channel_user, chatId: (r.id.split(":")[1] || null), url: r.channel_user ? "https://t.me/" + r.channel_user : null }])).values()];
   return json({
     now: Date.now(), days, reports, channels,
     counts: { total: reports.length, located: reports.filter((r) => r.hasLocation && !r.duplicateOf).length, duplicates: reports.filter((r) => r.duplicateOf).length },
