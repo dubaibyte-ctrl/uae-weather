@@ -153,10 +153,12 @@ async function tg(env, method, params = {}) {
 async function ensureWebhook(env, stub, force = false) {
   if (!env.TELEGRAM_BOT_TOKEN) return { configured: false };
   let secret = await stub.cfgGet("webhookSecret");
-  if (!secret) secret = await stub.cfgSet("webhookSecret", (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, ""));
+  let freshSecret = false;
+  if (!secret) { secret = await stub.cfgSet("webhookSecret", (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, "")); freshSecret = true; }
   const target = workerBase(env) + "/api/telegram-webhook";
   const already = (await stub.cfgGet("webhookFor")) === target && (await stub.cfgGet("webhookOk"));
-  if (force || !already) {
+  // Re-register whenever we just minted a secret, so Telegram's secret_token always matches what the webhook checks.
+  if (force || freshSecret || !already) {
     const res = await tg(env, "setWebhook", { url: target, secret_token: secret, allowed_updates: ["channel_post", "edited_channel_post", "message"], max_connections: 20 });
     await stub.cfgSet("webhookOk", !!res.ok); await stub.cfgSet("webhookFor", target);
     if (!(await stub.cfgGet("botUsername"))) { const me = await tg(env, "getMe"); if (me.ok) await stub.cfgSet("botUsername", me.result.username); }
@@ -244,7 +246,7 @@ export default {
       const stub = logStub(env);
       const [h, wok, buser, wstatus, authChats] = await Promise.all([stub.health(), stub.cfgGet("webhookOk"), stub.cfgGet("botUsername"), stub.cfgGet("webhookStatus"), stub.cfgGet("authChats")]);
       const tgStatus = { configured: !!env.TELEGRAM_BOT_TOKEN, registered: !!wok, botUsername: buser || null, webhook: wstatus || null, authorizedChats: (authChats || []).map((c) => ({ id: c.id, title: c.title })) };
-      return json({ now: Date.now(), build: "2026-10-17-tg3", ...h, telegram: tgStatus }, 200, { "cache-control": "no-store" });
+      return json({ now: Date.now(), build: "2026-10-17-tg4", ...h, telegram: tgStatus }, 200, { "cache-control": "no-store" });
     }
     if (u.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);
