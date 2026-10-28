@@ -76,10 +76,13 @@ export function extractReport(text) {
   let scanEn = ne, scanAr = na; const pad = (k) => " " + k + " ";
   for (const e of INDEX) {                                   // INDEX is longest-key-first so specific names win
     let hay = e.lang === "ar" ? scanAr : scanEn;
-    if (!hay.includes(pad(e.k))) continue;
+    // Arabic writers often prepend the article "ال" to a bare place name (مسافي → المسافي). Match both forms.
+    const alt = e.lang === "ar" && !e.k.startsWith("ال") ? " ال" + e.k + " " : null;
+    const span = hay.includes(pad(e.k)) ? pad(e.k) : alt && hay.includes(alt) ? alt : null;
+    if (!span) continue;
     if (e.place) { if (usedPlaceIds.has(e.place.id)) continue; usedPlaceIds.add(e.place.id); found.push({ kind: "place", ...e.place }); }
     else { if (usedEm.has(e.em)) continue; usedEm.add(e.em); found.push({ kind: "emirate", em: e.em }); }
-    hay = hay.split(pad(e.k)).join("  ");                    // blank the matched span so sub-names don't double-count
+    hay = hay.split(span).join("  ");                        // blank the matched span so sub-names don't double-count
     if (e.lang === "ar") scanAr = hay; else scanEn = hay;
   }
   const places = found.filter((f) => f.kind === "place");

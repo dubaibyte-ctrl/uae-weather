@@ -1,7 +1,7 @@
 // Connector framework: YouTube feed parsing, UAE-observation classification, row building. Pure, no network.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseYouTubeFeed, youtubeStormCentre } from "../src/lib/connectors.js";
+import { parseYouTubeFeed, youtubeStormCentre, instagramStormCentre, igMediaToItems } from "../src/lib/connectors.js";
 import { classifyItem, buildRows } from "../src/lib/community.js";
 
 const FEED = `<?xml version="1.0" encoding="UTF-8"?>
@@ -48,4 +48,39 @@ test("youtube connector fetchItems: slices to 15, drops >48h, throws on HTTP err
   assert.equal(items.length <= 15, true, "max 15");
   assert.ok(items.every((it) => now - it.publishedMs <= 48 * 3600e3), "within 48h");
   await assert.rejects(() => youtubeStormCentre.fetchItems(async () => ({ ok: false, status: 503 })), /http_503/);
+});
+
+// ---- Instagram (Business Discovery) connector: disabled without a token, parses media when enabled ----
+test("igMediaToItems maps media, drops empty captions and items older than 48h", () => {
+  const now = Date.parse("2026-10-28T08:00:00Z");
+  const media = [
+    { id: "m1", caption: "الإمارات أمطار على العين", timestamp: "2026-10-28T06:00:00+0000", permalink: "https://www.instagram.com/p/AAA/" },
+    { id: "m2", caption: "", timestamp: "2026-10-28T07:00:00+0000", permalink: "https://www.instagram.com/p/BBB/" },        // no caption -> dropped
+    { id: "m3", caption: "مطر على دبي", timestamp: "2026-10-20T06:00:00+0000", permalink: "https://www.instagram.com/p/CCC/" }, // >48h -> dropped
+  ];
+  const items = igMediaToItems(media, now);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].extId, "ig_m1");
+  assert.equal(items[0].url, "https://www.instagram.com/p/AAA/");
+  assert.equal(classifyItem(items[0].title).accept, true);   // flows through the same acceptance filter
+});
+
+test("instagram connector is disabled (inert) when no token is configured", async () => {
+  assert.equal(await instagramStormCentre.ready({ env: {} }), false);
+  assert.equal(await instagramStormCentre.ready({ env: { IG_ACCESS_TOKEN: "tok" } }), true);
+});
+
+test("instagram connector fetchItems calls Business Discovery and normalizes media", async () => {
+  const ts = new Date(Date.now() - 3600e3).toISOString().replace("Z", "+0000");
+  const stub = { _c: {}, async cfgGet(k) { return this._c[k] || null; }, async cfgSet(k, v) { this._c[k] = v; return v; } };
+  const f = async (url) => {
+    if (url.includes("me/accounts")) return { json: async () => ({ data: [{ instagram_business_account: { id: "17841000", username: "me" } }] }) };
+    if (url.includes("business_discovery")) return { json: async () => ({ business_discovery: { media: { data: [{ id: "m9", caption: "أمطار غزيرة على المسافي", timestamp: ts, permalink: "https://www.instagram.com/p/ZZZ/" }] } } }) };
+    return { json: async () => ({ error: { code: 100, message: "bad" } }) };
+  };
+  const items = await instagramStormCentre.fetchItems({ fetch: f, env: { IG_ACCESS_TOKEN: "tok" }, stub });
+  assert.equal(items.length, 1);
+  assert.equal(items[0].extId, "ig_m9");
+  assert.equal(stub._c["ig:userId"], "17841000");            // resolved + cached (an id, not a credential)
+  assert.equal(classifyItem(items[0].title).accept, true);   // Masafi + rain accepted
 });

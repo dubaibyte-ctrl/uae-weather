@@ -55,17 +55,22 @@ async function collect(env) {
   await stub.record({ metars, radar, errors, at });
   try { await collectScan(stub, errors); } catch (e) { errors.push("scan: " + (e.message || e)); }
   try { await ensureWebhook(env, stub); } catch (e) { errors.push("telegram: " + (e.message || e)); } // self-heals the webhook once the token secret exists
-  try { await runConnectors(stub, errors); } catch (e) { errors.push("connectors: " + (e.message || e)); }
+  try { await runConnectors(env, stub, errors); } catch (e) { errors.push("connectors: " + (e.message || e)); }
   if (errors.length) await stub.noteErrors(at, errors);
 }
 
 // Run each pull connector in isolation: one failure is recorded in that connector's health and never affects the
 // others, Telegram, radar or METAR. Accepted items flow through the same parser / verifier / Community pipeline.
-async function runConnectors(stub, errors) {
+async function runConnectors(env, stub, errors) {
   for (const c of PULL_CONNECTORS) {
     const prev = (await stub.getConnState(c.id)) || {};
+    // A connector that needs a credential it doesn't have (e.g. Instagram before authorization) stays inert.
+    if (c.ready && !(await c.ready({ env, stub }))) {
+      await stub.setConnState(c.id, { ...prev, enabled: false, lastPollMs: Date.now(), lastError: null });
+      continue;
+    }
     try {
-      const items = await c.fetchItems();
+      const items = await c.fetchItems({ fetch, env, stub });
       let accepted = 0, skipped = 0; const rows = [];
       for (const it of items) {
         const cls = classifyItem(it.title);
@@ -75,7 +80,7 @@ async function runConnectors(stub, errors) {
       }
       const res = rows.length ? await stub.saveReports(rows) : { saved: 0 };
       const newest = items.reduce((m, it) => Math.max(m, it.publishedMs), prev.newestItemMs || 0);
-      await stub.setConnState(c.id, { lastPollMs: Date.now(), ok: true, items: items.length, newestItemMs: newest, lastExtId: items[0]?.extId || prev.lastExtId || null, accepted: (prev.accepted || 0) + accepted, skipped: (prev.skipped || 0) + skipped, saved: (prev.saved || 0) + (res.saved || 0), lastError: null });
+      await stub.setConnState(c.id, { lastPollMs: Date.now(), ok: true, enabled: true, items: items.length, newestItemMs: newest, lastExtId: items[0]?.extId || prev.lastExtId || null, accepted: (prev.accepted || 0) + accepted, skipped: (prev.skipped || 0) + skipped, saved: (prev.saved || 0) + (res.saved || 0), lastError: null });
     } catch (e) {
       await stub.setConnState(c.id, { ...prev, lastPollMs: Date.now(), ok: false, lastError: String(e.message || e).slice(0, 140) });
       errors.push(`connector ${c.id}: ${String(e.message || e).slice(0, 80)}`);
@@ -354,7 +359,7 @@ export default {
       const [h, token, wok, buser, wstatus, authChats] = await Promise.all([stub.health(), getToken(env, stub), stub.cfgGet("webhookOk"), stub.cfgGet("botUsername"), stub.cfgGet("webhookStatus"), stub.cfgGet("authChats")]);
       const tgStatus = { configured: !!token, registered: !!wok, botUsername: buser || null, webhook: wstatus || null, authorizedChats: (authChats || []).map((c) => ({ id: c.id, title: c.title })) };
       const connectors = await stub.connStates(PULL_CONNECTORS.map((c) => c.id));
-      return json({ now: Date.now(), build: "2026-10-17-src1", ...h, telegram: tgStatus, connectors }, 200, { "cache-control": "no-store" });
+      return json({ now: Date.now(), build: "2026-10-28-src2", ...h, telegram: tgStatus, connectors }, 200, { "cache-control": "no-store" });
     }
     if (u.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);
