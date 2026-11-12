@@ -56,7 +56,49 @@ async function collect(env) {
   try { await collectScan(stub, errors); } catch (e) { errors.push("scan: " + (e.message || e)); }
   try { await ensureWebhook(env, stub); } catch (e) { errors.push("telegram: " + (e.message || e)); } // self-heals the webhook once the token secret exists
   try { await runConnectors(env, stub, errors); } catch (e) { errors.push("connectors: " + (e.message || e)); }
+  try { await reparseCommunityOnce(stub); } catch (e) { errors.push("reparse: " + (e.message || e)); }
   if (errors.length) await stub.noteErrors(at, errors);
+}
+
+// One-time maintenance: historical reports were parsed by an earlier gazetteer and can't be re-fetched (the connector
+// only looks back 48h). Re-run the CURRENT parser over every stored report's text so newly-recognised places (e.g. Sharm,
+// Hamda, bare دبا) are added, and a generic emirate-capital pin that specific places now supersede is removed. Guarded by
+// a flag so it runs exactly once. Never deletes a specific place, and keeps every post's text/time/url/verification.
+const EMIRATE_CAPITALS = new Set(["fujairah", "sharjah", "ajman", "abu-dhabi", "ras-al-khaimah", "umm-al-quwain"]);
+async function reparseCommunityOnce(stub) {
+  if (await stub.cfgGet("maint:reparseV2")) return;
+  const rows = await stub.communityAll();
+  const groups = new Map();                       // key: source + extId (extId = id between "source:" and ":placeId")
+  for (const r of rows) {
+    const extId = r.id.slice(r.source.length + 1, r.id.lastIndexOf(":"));
+    const key = r.source + "\u0000" + extId;
+    if (!groups.has(key)) groups.set(key, { source: r.source, extId, rows: [] });
+    groups.get(key).rows.push(r);
+  }
+  const toInsert = [], toDelete = [];
+  for (const g of groups.values()) {
+    const rep = g.rows[0];
+    const parsed = extractReport(rep.text || "");
+    const want = new Set(parsed.places.map((p) => p.id));
+    const have = new Set(g.rows.map((r) => r.place_id));
+    const hasSpecific = parsed.places.some((p) => !EMIRATE_CAPITALS.has(p.id));
+    for (const place of parsed.places) {          // add newly-recognised specific places, preserving the post's metadata
+      if (have.has(place.id)) continue;
+      toInsert.push({
+        id: `${g.source}:${g.extId}:${place.id}`, source: g.source, channel: rep.channel, channelUser: rep.channel_user, msgId: rep.msg_id,
+        text: (rep.text || "").slice(0, 1000), lang: parsed.lang, event: parsed.event, events: parsed.events,
+        placeId: place.id, placeName: place.en, em: place.em, lat: place.lat, lon: place.lon,
+        publishMs: rep.publish_ms, observedMs: rep.observed_ms, forwarded: !!rep.forwarded, forwardMs: rep.forward_ms,
+        url: rep.url, sig: reportSignature(rep.text || "", place.id), hasLocation: true,
+      });
+    }
+    for (const r of g.rows) {                      // drop only a generic emirate-capital pin that specific places now supersede
+      if (!want.has(r.place_id) && EMIRATE_CAPITALS.has(r.place_id) && hasSpecific) toDelete.push(r.id);
+    }
+  }
+  if (toInsert.length) await stub.saveReports(toInsert);
+  for (const id of toDelete) await stub.deleteCommunity(id);
+  await stub.cfgSet("maint:reparseV2", { at: Date.now(), inserted: toInsert.length, deleted: toDelete.length });
 }
 
 // Run each pull connector in isolation: one failure is recorded in that connector's health and never affects the
@@ -376,7 +418,7 @@ export default {
       // Public endpoint: expose only the channel title, never the private Telegram chat id.
       const tgStatus = { configured: !!token, registered: !!wok, botUsername: buser || null, webhook: wstatus || null, authorizedChats: (authChats || []).map((c) => ({ title: c.title })) };
       const connectors = await stub.connStates(PULL_CONNECTORS.map((c) => c.id));
-      return json({ now: Date.now(), build: "2026-11-12-source-metadata", ...h, telegram: tgStatus, connectors }, 200, { "cache-control": "no-store" });
+      return json({ now: Date.now(), build: "2026-11-12-source-metadata2", ...h, telegram: tgStatus, connectors }, 200, { "cache-control": "no-store" });
     }
     if (u.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);

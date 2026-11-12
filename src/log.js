@@ -73,6 +73,9 @@ export class ValidationLog extends DurableObject {
     const since = Date.now() - days * 86400e3;
     return this.sql.exec("SELECT * FROM community WHERE publish_ms > ? ORDER BY publish_ms DESC LIMIT 400", since).toArray();
   }
+  // All stored reports (for one-time re-parse maintenance). Bounded by the 14-day retention already enforced on writes.
+  communityAll() { return this.sql.exec("SELECT * FROM community ORDER BY publish_ms DESC LIMIT 2000").toArray(); }
+  deleteCommunity(id) { this.sql.exec("DELETE FROM community WHERE id=?", id); return true; }
   metarsSince(ms) { return this.sql.exec("SELECT station, obs_ms AS obsMs, rain, thunder FROM metar WHERE obs_ms > ?", ms).toArray(); }
 
   knownFrames() {
