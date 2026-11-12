@@ -9,14 +9,38 @@ const YT_FEED = (channelId) => `https://www.youtube.com/feeds/videos.xml?channel
 const YT_API = "https://www.googleapis.com/youtube/v3";
 
 // ---- configurable source registries (add channels / usernames here; no code change elsewhere) ----
+// Every source carries explicit platform metadata so links are built from the metadata, never by assuming Telegram:
+//   platform    — "youtube" | "instagram" | "telegram"
+//   displayName — human label shown in the UI
+//   account     — the account/channel identifier on that platform (YouTube @handle, IG username)
+//   channelId   — YouTube channel id (uploads come from here)
+//   canonicalUrl— the source's own channel/profile page
+// Verified 2026-11-12 from the channel's own About page: the YouTube channel "مركز العاصفة" (Storm Centre),
+// handle @storm_ae, id UCGLpsE0Q0m0-_jigv37CTrw, owner Khaled Alghafli, lists its OFFICIAL Instagram as @storm.center
+// (NOT @storm_ae — @storm_ae is the YouTube handle). They are treated as distinct sources of the same brand.
 export const YT_CHANNELS = [
-  { channelId: "UCGLpsE0Q0m0-_jigv37CTrw", label: "Storm Centre (YouTube)", user: "storm_ae" },
-  // add more UAE weather YouTube channels here as provided, e.g. { channelId: "UC...", label: "...", user: "..." }
+  { platform: "youtube", channelId: "UCGLpsE0Q0m0-_jigv37CTrw", account: "storm_ae", user: "storm_ae",
+    label: "Storm Centre (YouTube)", displayName: "Storm Centre (YouTube)",
+    canonicalUrl: "https://www.youtube.com/channel/UCGLpsE0Q0m0-_jigv37CTrw" },
+  // add more UAE weather YouTube channels here as provided
 ];
 export const IG_USERNAMES = [
-  { user: "storm_ae", label: "Storm Centre (Instagram)" },
+  { platform: "instagram", account: "storm.center", user: "storm.center",
+    label: "Storm Centre (Instagram)", displayName: "Storm Centre (Instagram)",
+    canonicalUrl: "https://www.instagram.com/storm.center/" },
   // add more public Business/Creator usernames here as provided
 ];
+
+// Build a source's canonical channel/profile URL from its platform + identifier. Platform-aware: a YouTube @handle
+// never becomes a t.me link. Returns null when there is no public page (e.g. a private Telegram channel).
+export function canonicalChannelUrl(platform, identifier) {
+  if (!identifier) return null;
+  const id = String(identifier).replace(/^@/, "");
+  if (platform === "youtube") return id.startsWith("UC") ? `https://www.youtube.com/channel/${id}` : `https://www.youtube.com/@${id}`;
+  if (platform === "instagram") return `https://www.instagram.com/${id}/`;
+  if (platform === "telegram") return `https://t.me/${id}`;
+  return null;
+}
 
 function decodeXml(s) {
   return (s || "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'").replace(/&amp;/g, "&");
@@ -135,10 +159,10 @@ export function igMediaToItems(media, now = Date.now(), maxAgeMs = 48 * 3600e3, 
 }
 
 export const instagramStormCentre = {
-  id: "instagram:storm_ae",
+  id: "instagram:storm.center",
   source: "instagram",
   channel: "Storm Centre (Instagram)",
-  channelUser: "storm_ae",
+  channelUser: "storm.center",
   requiresToken: true,
   maxItems: 15,
   maxAgeMs: 48 * 3600e3,

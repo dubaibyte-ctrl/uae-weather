@@ -21,6 +21,12 @@ export function normEn(s) {
 }
 const stripAl = (s) => s.replace(/^(al|el|ad|ar|as|at|az)\s+/, "").replace(/^(ال|الـ)/, "");
 
+// Bare-name aliases a caption may use for a place whose gazetteer name is longer or qualified. The full names still win
+// (the index is longest-key-first and a matched span is blanked), so these only catch the standalone short form.
+const EXTRA_ALIASES = [
+  { ar: "دبا", id: "dibba-al-fujairah" },   // bare "Dibba" → Dibba Al-Fujairah (the main Dibba)
+];
+
 // ---- gazetteer index: longest keys first so "Dibba Al Fujairah" wins over "Fujairah" ----
 function buildIndex() {
   const entries = [];
@@ -29,6 +35,7 @@ function buildIndex() {
     add(p.en, "en", p, p.em); add(stripAl(normEn(p.en)), "en", p, p.em);
     if (p.ar) { add(p.ar, "ar", p, p.em); add(stripAl(normAr(p.ar)), "ar", p, p.em); }
   }
+  for (const a of EXTRA_ALIASES) { const p = PLACES.find((x) => x.id === a.id); if (!p) continue; if (a.ar) add(a.ar, "ar", p, p.em); if (a.en) add(a.en, "en", p, p.em); }
   for (const [code, e] of Object.entries(EMIRATES)) { add(e.en, "en", null, code); add(e.ar, "ar", null, code); }
   // de-dup identical keys (keep the first / most specific place), then longest-first
   const seen = new Map();
@@ -62,6 +69,11 @@ function detectEvents(normEnTxt, normArTxt) {
 }
 const EVENT_ORDER = ["hail", "thunder", "flood", "rain"];
 
+// Emirate names (normalised) used to detect a regional qualifier like "في الفجيرة" / "in Fujairah", which should be
+// read as context for the emirate, NOT as the emirate-capital city of the same name.
+const EM_AR = { "دبي": "du", "الشارقه": "sh", "عجمان": "aj", "ام القيوين": "uq", "راس الخيمه": "rk", "الفجيره": "fu", "ابوظبي": "ad" };
+const EM_EN = { "dubai": "du", "sharjah": "sh", "ajman": "aj", "umm al quwain": "uq", "ras al khaimah": "rk", "fujairah": "fu", "abu dhabi": "ad" };
+
 // ---- main parse ----
 export function extractReport(text) {
   const raw = text || "";
@@ -71,9 +83,14 @@ export function extractReport(text) {
   const events = detectEvents(ne, na);
   const primary = EVENT_ORDER.find((e) => events.has(e)) || "unknown";
   const lang = /[؀-ۿ]/.test(raw) ? (/[a-z]/i.test(raw) ? "mixed" : "ar") : "en";
+  // "في <emirate>" / "in <emirate>" is a regional qualifier, not a pinned city. Record the emirate as context and blank
+  // the span so a caption like "ضدنا وشرم ودبا في الفجيرة" yields the three named places — never a generic Fujairah city.
+  const qualEm = new Set(); let qa = na, qe = ne;
+  for (const [name, code] of Object.entries(EM_AR)) { const re = new RegExp("(^|\\s)في\\s+(?:اماره\\s+)?" + name + "(?=\\s|$)", "g"); if (re.test(qa)) { qualEm.add(code); qa = qa.replace(re, " "); } }
+  for (const [name, code] of Object.entries(EM_EN)) { const re = new RegExp("(^|\\s)in\\s+" + name.replace(/ /g, "\\s+") + "(?=\\s|$)", "g"); if (re.test(qe)) { qualEm.add(code); qe = qe.replace(re, " "); } }
   // place matching: scan longest keys first, remove matched span so a place isn't double-counted
   const found = []; const usedPlaceIds = new Set(); const usedEm = new Set();
-  let scanEn = ne, scanAr = na; const pad = (k) => " " + k + " ";
+  let scanEn = qe, scanAr = qa; const pad = (k) => " " + k + " ";
   for (const e of INDEX) {                                   // INDEX is longest-key-first so specific names win
     let hay = e.lang === "ar" ? scanAr : scanEn;
     // Arabic writers often prepend the article "ال" to a bare place name (مسافي → المسافي). Match both forms.
@@ -90,7 +107,7 @@ export function extractReport(text) {
   return {
     lang, events: [...events], event: primary,
     places: places.map((p) => ({ id: p.id, en: p.en, ar: p.ar, em: p.em, reg: p.reg, lat: p.lat, lon: p.lon })),
-    emirates: [...new Set(emiratesOnly)],
+    emirates: [...new Set([...emiratesOnly, ...qualEm])],
     hasLocation: places.length > 0,
     hasWeather: events.size > 0,
   };

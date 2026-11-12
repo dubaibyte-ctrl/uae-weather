@@ -11,7 +11,7 @@ import { fetchIndex, probeFrame } from "./lib/radar.js";
 import { scanFrame, scanCoverage } from "./lib/scan.js";
 import { GRID, ECHO_ALPHA, MIN_CLUSTER_PX } from "../public/lib/radar-geo.js";
 import { extractReport, reportSignature, verifyReport, classifyItem, buildRows } from "./lib/community.js";
-import { PULL_CONNECTORS, YT_CHANNELS } from "./lib/connectors.js";
+import { PULL_CONNECTORS, YT_CHANNELS, canonicalChannelUrl } from "./lib/connectors.js";
 
 export { ValidationLog };
 
@@ -315,6 +315,12 @@ function buildGroups(reports) {
   return groups.sort((a, b) => b.publishMs - a.publishMs);
 }
 
+// A stored report id can embed a private Telegram chat id ("telegram:<chatId>:<msg>[:place]"). Replace that chat id
+// with a short deterministic token so public endpoints never expose it, while keeping cross-references (group ids,
+// member ids, dup-of) consistent within the response. Non-Telegram ids are returned unchanged.
+function fnv1a(s) { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); } return (h >>> 0).toString(16).padStart(8, "0"); }
+function hideChatId(id) { return String(id).replace(/^telegram:(-?\d+):/, (_m, cid) => "telegram:c" + fnv1a(cid) + ":"); }
+
 async function handleCommunity(env, u) {
   const days = Math.min(Math.max(parseInt(u.searchParams.get("days") || "2", 10) || 2, 1), 14);
   const stub = logStub(env);
@@ -324,22 +330,30 @@ async function handleCommunity(env, u) {
   const reports = rows.map((r) => {
     const v = r.has_location ? verifyReport({ lat: r.lat, lon: r.lon, publishMs: r.publish_ms, event: r.event }, scan.frames, metars) : { status: "missing_location", radar: "n/a", metar: "n/a" };
     return {
-      id: r.id, source: r.source, channel: r.channel, channelUser: r.channel_user, url: r.url,
+      id: hideChatId(r.id), source: r.source, platform: r.source, channel: r.channel,
+      account: r.channel_user ? "@" + String(r.channel_user).replace(/^@/, "") : null,
+      channelUrl: canonicalChannelUrl(r.source, r.channel_user),   // canonical profile/channel page (platform-aware)
+      url: r.url,                                                    // original post URL (watch / permalink / t.me msg)
       text: r.text, lang: r.lang, event: r.event, events: JSON.parse(r.events || "[]"),
       place: r.place_id ? { id: r.place_id, name: r.place_name, em: r.em, lat: r.lat, lon: r.lon } : null,
       emirate: r.em, publishMs: r.publish_ms, observedMs: r.observed_ms,
       forwarded: !!r.forwarded, forwardMs: r.forward_ms,
-      duplicateOf: r.dup_of, hasLocation: !!r.has_location, groupId: r.group_id || r.id,
+      duplicateOf: r.dup_of ? hideChatId(r.dup_of) : null, hasLocation: !!r.has_location, groupId: hideChatId(r.group_id || r.id),
       verify: r.dup_of ? "duplicate" : v.status, verifyDetail: v,
     };
   });
   const groups = buildGroups(reports);
-  // chatId is parsed from the stored id ("telegram:<chatId>:<msg>[:place]") so a private channel's id is discoverable for the allowlist.
-  const channels = [...new Map(rows.map((r) => [r.channel, { channel: r.channel, user: r.channel_user, chatId: (r.id.split(":")[1] || null), url: r.channel_user ? "https://t.me/" + r.channel_user : null }])).values()];
+  // One entry per distinct source, with its platform and canonical page built from metadata — never a fabricated
+  // Telegram link, and never the private chat id. A private Telegram channel simply has no public URL.
+  const channels = [...new Map(rows.map((r) => [r.channel, {
+    platform: r.source, channel: r.channel,
+    account: r.channel_user ? "@" + String(r.channel_user).replace(/^@/, "") : null,
+    url: canonicalChannelUrl(r.source, r.channel_user),
+  }])).values()];
   return json({
     now: Date.now(), days, reports, groups, channels,
     counts: { total: reports.length, events: groups.length, located: reports.filter((r) => r.hasLocation && !r.duplicateOf).length, duplicates: reports.filter((r) => r.duplicateOf).length, multiSource: groups.filter((g) => g.sources.length > 1).length },
-    disclaimer: "Community reports are public social-media posts, not measurements. They are shown as unverified unless independently corroborated by radar or airport observations. Storm Centre is NOT integrated until its owner authorises access.",
+    disclaimer: "Reports are obtained from publicly accessible platform data and are community claims, not measurements. This app is not affiliated with or endorsed by the source accounts. Each report stays unverified unless independently corroborated by radar or airport observations.",
   }, 200, { "cache-control": "no-store" });
 }
 
@@ -359,9 +373,10 @@ export default {
     if (u.pathname === "/api/health") {
       const stub = logStub(env);
       const [h, token, wok, buser, wstatus, authChats] = await Promise.all([stub.health(), getToken(env, stub), stub.cfgGet("webhookOk"), stub.cfgGet("botUsername"), stub.cfgGet("webhookStatus"), stub.cfgGet("authChats")]);
-      const tgStatus = { configured: !!token, registered: !!wok, botUsername: buser || null, webhook: wstatus || null, authorizedChats: (authChats || []).map((c) => ({ id: c.id, title: c.title })) };
+      // Public endpoint: expose only the channel title, never the private Telegram chat id.
+      const tgStatus = { configured: !!token, registered: !!wok, botUsername: buser || null, webhook: wstatus || null, authorizedChats: (authChats || []).map((c) => ({ title: c.title })) };
       const connectors = await stub.connStates(PULL_CONNECTORS.map((c) => c.id));
-      return json({ now: Date.now(), build: "2026-11-12-yt-redeploytest", ...h, telegram: tgStatus, connectors }, 200, { "cache-control": "no-store" });
+      return json({ now: Date.now(), build: "2026-11-12-source-metadata", ...h, telegram: tgStatus, connectors }, 200, { "cache-control": "no-store" });
     }
     if (u.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);

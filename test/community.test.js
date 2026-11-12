@@ -20,6 +20,20 @@ test("extracts events and UAE places in English and Arabic", () => {
   assert.ok(!c.places.some((p) => p.en === "Fujairah"), "specific Dibba match must not also yield Fujairah");
 });
 
+test("real live captions: every named location is resolved, with no generic-emirate substitution", () => {
+  // Mleiha + Hamda (Sharjah interior, adjacent) — Hamda was previously unrecognised.
+  const a = extractReport("الإمارات : الان هطول أمطار رعدية غزيرة على مليحة وحمدة");
+  assert.deepEqual(a.places.map((p) => p.en).sort(), ["Hamda", "Mleiha"]);
+  assert.ok(a.events.includes("thunder"));
+
+  // Dadna + Sharm + Dibba (Fujairah) — Sharm and bare دبا were previously unrecognised, and "في الفجيرة" wrongly
+  // produced a generic Fujairah city pin. Expect the three specific places and NO Fujairah city.
+  const b = extractReport("الإمارات : الان هطول أمطار الخير على ضدنا وشرم ودبا في الفجيرة");
+  assert.deepEqual(b.places.map((p) => p.en).sort(), ["Dadna", "Dibba Al-Fujairah", "Sharm"]);
+  assert.ok(!b.places.some((p) => p.en === "Fujairah"), "must not substitute the generic Fujairah emirate location");
+  assert.ok(b.emirates.includes("fu"), "Fujairah is kept as context");
+});
+
 test("bare Arabic برد (cold) is not treated as hail; explicit hail phrase is", () => {
   assert.equal(extractReport("الجو بارد اليوم في دبي").event, "unknown");
   assert.equal(extractReport("تساقط حبات البرد في مليحة").event, "hail");

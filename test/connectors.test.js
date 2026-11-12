@@ -1,7 +1,7 @@
 // Connector framework: YouTube feed parsing, UAE-observation classification, row building. Pure, no network.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseYouTubeFeed, parsePlaylistItems, youtubeStormCentre, instagramStormCentre, igMediaToItems } from "../src/lib/connectors.js";
+import { parseYouTubeFeed, parsePlaylistItems, youtubeStormCentre, instagramStormCentre, igMediaToItems, canonicalChannelUrl, YT_CHANNELS, IG_USERNAMES } from "../src/lib/connectors.js";
 import { classifyItem, buildRows } from "../src/lib/community.js";
 
 const FEED = `<?xml version="1.0" encoding="UTF-8"?>
@@ -10,6 +10,23 @@ const FEED = `<?xml version="1.0" encoding="UTF-8"?>
  <entry><yt:videoId>vid_sa</yt:videoId><title>#السعودية أمطار الرحمة في #مكة_المكرمة</title><published>2026-10-14T17:30:41+00:00</published></entry>
  <entry><yt:videoId>vid_amp</yt:videoId><title>الإمارات : امطار &amp; برق على العين</title><published>2026-10-15T10:00:00+00:00</published></entry>
 </feed>`;
+
+test("canonicalChannelUrl is platform-aware and never fabricates a Telegram link for a non-Telegram source", () => {
+  assert.equal(canonicalChannelUrl("youtube", "storm_ae"), "https://www.youtube.com/@storm_ae");            // YouTube handle, not t.me
+  assert.equal(canonicalChannelUrl("youtube", "UCGLpsE0Q0m0-_jigv37CTrw"), "https://www.youtube.com/channel/UCGLpsE0Q0m0-_jigv37CTrw");
+  assert.equal(canonicalChannelUrl("instagram", "storm.center"), "https://www.instagram.com/storm.center/");
+  assert.equal(canonicalChannelUrl("telegram", "publicchan"), "https://t.me/publicchan");
+  assert.equal(canonicalChannelUrl("telegram", null), null);                                                // private channel: no public URL
+});
+
+test("source registries carry explicit platform metadata; Instagram targets the verified @storm.center (not @storm_ae)", () => {
+  assert.equal(YT_CHANNELS[0].platform, "youtube");
+  assert.equal(YT_CHANNELS[0].channelId, "UCGLpsE0Q0m0-_jigv37CTrw");
+  assert.equal(YT_CHANNELS[0].canonicalUrl, "https://www.youtube.com/channel/UCGLpsE0Q0m0-_jigv37CTrw");
+  assert.equal(IG_USERNAMES[0].platform, "instagram");
+  assert.equal(IG_USERNAMES[0].user, "storm.center");          // @storm_ae is the YouTube handle, a distinct source
+  assert.equal(instagramStormCentre.id, "instagram:storm.center");
+});
 
 test("parseYouTubeFeed extracts id, title, url, time; decodes entities", () => {
   const e = parseYouTubeFeed(FEED);
