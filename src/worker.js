@@ -11,7 +11,7 @@ import { fetchIndex, probeFrame } from "./lib/radar.js";
 import { scanFrame, scanCoverage } from "./lib/scan.js";
 import { GRID, ECHO_ALPHA, MIN_CLUSTER_PX } from "../public/lib/radar-geo.js";
 import { extractReport, reportSignature, verifyReport, classifyItem, buildRows } from "./lib/community.js";
-import { PULL_CONNECTORS } from "./lib/connectors.js";
+import { PULL_CONNECTORS, YT_CHANNELS } from "./lib/connectors.js";
 
 export { ValidationLog };
 
@@ -75,12 +75,14 @@ async function runConnectors(env, stub, errors) {
       for (const it of items) {
         const cls = classifyItem(it.title);
         if (!cls.accept) { skipped++; continue; }
-        rows.push(...buildRows({ source: c.source, extId: it.extId, channel: c.channel, channelUser: c.channelUser, url: it.url, title: it.title, publishedMs: it.publishedMs, observedMs: null }));
+        // publication time (it.publishedMs) and observation time are kept distinct: YouTube/IG state no clock-time,
+        // so observedMs stays null; only publish time is recorded. channel/url come from the item (multi-channel).
+        rows.push(...buildRows({ source: c.source, extId: it.extId, channel: it.channel || c.channel, channelUser: it.channelUser || c.channelUser, url: it.url, title: it.title, publishedMs: it.publishedMs, observedMs: null }));
         accepted++;
       }
       const res = rows.length ? await stub.saveReports(rows) : { saved: 0 };
       const newest = items.reduce((m, it) => Math.max(m, it.publishedMs), prev.newestItemMs || 0);
-      await stub.setConnState(c.id, { lastPollMs: Date.now(), ok: true, enabled: true, items: items.length, newestItemMs: newest, lastExtId: items[0]?.extId || prev.lastExtId || null, accepted: (prev.accepted || 0) + accepted, skipped: (prev.skipped || 0) + skipped, saved: (prev.saved || 0) + (res.saved || 0), lastError: null });
+      await stub.setConnState(c.id, { lastPollMs: Date.now(), ok: true, enabled: true, via: c._via || prev.via || null, channels: c.source === "youtube" ? YT_CHANNELS.length : undefined, items: items.length, newestItemMs: newest, lastExtId: items[0]?.extId || prev.lastExtId || null, accepted: (prev.accepted || 0) + accepted, skipped: (prev.skipped || 0) + skipped, saved: (prev.saved || 0) + (res.saved || 0), lastError: null });
     } catch (e) {
       await stub.setConnState(c.id, { ...prev, lastPollMs: Date.now(), ok: false, lastError: String(e.message || e).slice(0, 140) });
       errors.push(`connector ${c.id}: ${String(e.message || e).slice(0, 80)}`);
@@ -359,7 +361,7 @@ export default {
       const [h, token, wok, buser, wstatus, authChats] = await Promise.all([stub.health(), getToken(env, stub), stub.cfgGet("webhookOk"), stub.cfgGet("botUsername"), stub.cfgGet("webhookStatus"), stub.cfgGet("authChats")]);
       const tgStatus = { configured: !!token, registered: !!wok, botUsername: buser || null, webhook: wstatus || null, authorizedChats: (authChats || []).map((c) => ({ id: c.id, title: c.title })) };
       const connectors = await stub.connStates(PULL_CONNECTORS.map((c) => c.id));
-      return json({ now: Date.now(), build: "2026-10-28-src2", ...h, telegram: tgStatus, connectors }, 200, { "cache-control": "no-store" });
+      return json({ now: Date.now(), build: "2026-11-12-yt-dataapi", ...h, telegram: tgStatus, connectors }, 200, { "cache-control": "no-store" });
     }
     if (u.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);

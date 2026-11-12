@@ -1,16 +1,39 @@
 // Pull-based public source connectors. Each connector fetches recent public items and returns a normalized list
-// { extId, title, url, publishedMs }. The Worker runs them on the existing cron, isolated (one failure never
-// affects Telegram, radar, METAR or other connectors), classifies each item, and feeds accepted ones through the
-// same parser / verifier / Community pipeline. No credentials here — these are public, credential-free feeds.
+// { extId, title, url, publishedMs, channel?, channelUser? }. The Worker runs them on the existing cron, isolated
+// (one failure never affects Telegram, radar, METAR or other connectors), classifies each item, and feeds accepted
+// ones through the SAME parser / verifier / Community pipeline. extId is the bare YouTube videoId / "ig_"+mediaId so
+// report ids stay identical across the RSS→Data-API switch — previously collected reports are preserved, not re-saved.
 
-const YT_FEED = (channelId) => `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`;
 const UA = { "user-agent": "uae-weather-personal/1.0 (+personal weather app)" };
+const YT_FEED = (channelId) => `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`;
+const YT_API = "https://www.googleapis.com/youtube/v3";
+
+// ---- configurable source registries (add channels / usernames here; no code change elsewhere) ----
+export const YT_CHANNELS = [
+  { channelId: "UCGLpsE0Q0m0-_jigv37CTrw", label: "Storm Centre (YouTube)", user: "storm_ae" },
+  // add more UAE weather YouTube channels here as provided, e.g. { channelId: "UC...", label: "...", user: "..." }
+];
+export const IG_USERNAMES = [
+  { user: "storm_ae", label: "Storm Centre (Instagram)" },
+  // add more public Business/Creator usernames here as provided
+];
 
 function decodeXml(s) {
   return (s || "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'").replace(/&amp;/g, "&");
 }
+// Read a credential from a Cloudflare Secrets Store binding (.get()) or a plain secret string. Never from code/DO.
+async function readSecret(b) {
+  if (!b) return null;
+  if (typeof b === "string") return b || null;
+  if (typeof b.get === "function") { try { return (await b.get()) || null; } catch { return null; } }
+  return null;
+}
+export const ytApiKey = (env) => readSecret(env && env.YOUTUBE_API_KEY);
+export const igToken = (env) => readSecret(env && env.IG_ACCESS_TOKEN);
 
-// Parse a YouTube channel RSS (Atom) feed into entries. Pure, so it is unit-tested with a fixture.
+/* ============================ YouTube ============================ */
+
+// Parse a YouTube channel RSS (Atom) feed into entries. Pure, unit-tested with a fixture. (Fallback path.)
 export function parseYouTubeFeed(xml) {
   const out = [];
   const blocks = String(xml || "").split("<entry>").slice(1);
@@ -26,7 +49,45 @@ export function parseYouTubeFeed(xml) {
   return out;
 }
 
-// Storm Centre (مركز العاصفة) YouTube channel. Free RSS, no credentials.
+// Parse a YouTube Data API playlistItems response. Pure, unit-tested. publishedAt is the PUBLICATION time.
+export function parsePlaylistItems(json, ch) {
+  return ((json && json.items) || []).map((it) => {
+    const s = it.snippet || {};
+    const vid = s.resourceId && s.resourceId.videoId;
+    const publishedMs = Date.parse(s.publishedAt);
+    if (!vid || !publishedMs) return null;
+    return { extId: vid, title: (s.title || "").trim(), url: `https://www.youtube.com/watch?v=${vid}`, publishedMs, channel: ch.label, channelUser: ch.user };
+  }).filter(Boolean);
+}
+
+// Resolve + cache a channel's uploads playlist id (channels.list = 1 unit, cached in config so it isn't spent each poll).
+async function uploadsPlaylistId(ch, key, f, stub) {
+  const cacheKey = "yt:uploads:" + ch.channelId;
+  let pid = stub ? await stub.cfgGet(cacheKey) : null;
+  if (pid) return pid;
+  const r = await f(`${YT_API}/channels?part=contentDetails&id=${ch.channelId}&key=${encodeURIComponent(key)}`, { headers: UA });
+  const j = await r.json();
+  if (j.error) throw new Error("yt_api_" + (j.error.code || "err"));
+  pid = j.items && j.items[0] && j.items[0].contentDetails && j.items[0].contentDetails.relatedPlaylists && j.items[0].contentDetails.relatedPlaylists.uploads;
+  if (pid && stub) await stub.cfgSet(cacheKey, pid);
+  return pid || null;
+}
+async function ytViaDataApi(ch, key, f, stub, maxItems) {
+  const pid = await uploadsPlaylistId(ch, key, f, stub);
+  if (!pid) throw new Error("no_uploads_playlist");
+  const r = await f(`${YT_API}/playlistItems?part=snippet&maxResults=${maxItems}&playlistId=${pid}&key=${encodeURIComponent(key)}`, { headers: UA });
+  const j = await r.json();
+  if (j.error) throw new Error("yt_api_" + (j.error.code || "err"));
+  return parsePlaylistItems(j, ch);
+}
+async function ytViaRss(ch, f) {
+  const r = await f(YT_FEED(ch.channelId), { headers: UA });
+  if (!r.ok) throw new Error("http_" + r.status);
+  return parseYouTubeFeed(await r.text()).map((e) => ({ ...e, channel: ch.label, channelUser: ch.user }));
+}
+
+// Storm Centre + any other configured YouTube weather channels. Uses the official Data API when a key is present
+// (reliable, quota-efficient), and falls back to the public RSS feed until a key is configured (keeps the feed alive).
 export const youtubeStormCentre = {
   id: "youtube:storm_centre",
   source: "youtube",
@@ -34,32 +95,26 @@ export const youtubeStormCentre = {
   channelUser: "storm_ae",
   maxItems: 15,
   maxAgeMs: 48 * 3600e3,
-  // ctx = { fetch, env, stub }; a bare fetch function is also accepted (back-compat with tests).
+  _via: null,
   async fetchItems(ctx = {}) {
     const f = typeof ctx === "function" ? ctx : ctx.fetch || fetch;
-    const r = await f(YT_FEED("UCGLpsE0Q0m0-_jigv37CTrw"), { headers: UA });
-    if (!r.ok) throw new Error("http_" + r.status);
-    const entries = parseYouTubeFeed(await r.text());
-    const now = Date.now();
-    return entries.slice(0, this.maxItems).filter((e) => now - e.publishedMs <= this.maxAgeMs);
+    const env = ctx && typeof ctx === "object" ? ctx.env : null;
+    const stub = ctx && typeof ctx === "object" ? ctx.stub : null;
+    const key = await ytApiKey(env);
+    this._via = key ? "data_api" : "rss";
+    const now = Date.now(), out = [], errs = [];
+    for (const ch of YT_CHANNELS) {
+      try { const chItems = key ? await ytViaDataApi(ch, key, f, stub, this.maxItems) : await ytViaRss(ch, f); out.push(...chItems.slice(0, this.maxItems)); }
+      catch (e) { errs.push(ch.label + ":" + String(e.message || e)); }     // per-channel isolation
+    }
+    if (!out.length && errs.length) throw new Error(errs[0]);               // all channels failed → surface in health
+    return out.filter((e) => now - e.publishedMs <= this.maxAgeMs);
   },
 };
 
-// ---- Storm Centre Instagram via Meta Business Discovery (Facebook Login path). DISABLED until authorized. ----
-// Credentials are NEVER in code or the Durable Object. The access token is read from a Cloudflare secret binding
-// (env.IG_ACCESS_TOKEN — a Secrets Store binding declared in wrangler.jsonc, or a plain secret). With no token the
-// connector reports enabled:false and is skipped. The app owner's own IG Business user-id is resolved from the token
-// and cached in config (an id, not a credential). Business Discovery reads @storm_ae's public media by username.
+/* ============================ Instagram (Business Discovery, disabled until authorized) ============================ */
 const GRAPH = "https://graph.facebook.com/v21.0";
-const IG_TARGET = "storm_ae";
 
-export async function igToken(env) {
-  const b = env && env.IG_ACCESS_TOKEN;
-  if (!b) return null;
-  if (typeof b === "string") return b || null;
-  if (typeof b.get === "function") { try { return (await b.get()) || null; } catch { return null; } }
-  return null;
-}
 async function igUserId(env, stub, token, f) {
   let id = stub ? await stub.cfgGet("ig:userId") : null;
   if (id) return id;
@@ -71,10 +126,10 @@ async function igUserId(env, stub, token, f) {
   if (id && stub) await stub.cfgSet("ig:userId", id);
   return id || null;
 }
-// Pure: turn a Business Discovery media list into normalized items. Unit-tested with a fixture.
-export function igMediaToItems(media, now = Date.now(), maxAgeMs = 48 * 3600e3, maxItems = 15) {
+// Pure: Business Discovery media list → normalized items. Unit-tested.
+export function igMediaToItems(media, now = Date.now(), maxAgeMs = 48 * 3600e3, maxItems = 15, label = null, user = null) {
   return (media || [])
-    .map((m) => ({ extId: "ig_" + m.id, title: (m.caption || "").trim(), url: m.permalink, publishedMs: Date.parse(m.timestamp) }))
+    .map((m) => ({ extId: "ig_" + m.id, title: (m.caption || "").trim(), url: m.permalink, publishedMs: Date.parse(m.timestamp), channel: label, channelUser: user }))
     .filter((m) => m.title && m.url && m.publishedMs && now - m.publishedMs <= maxAgeMs)
     .slice(0, maxItems);
 }
@@ -83,7 +138,7 @@ export const instagramStormCentre = {
   id: "instagram:storm_ae",
   source: "instagram",
   channel: "Storm Centre (Instagram)",
-  channelUser: IG_TARGET,
+  channelUser: "storm_ae",
   requiresToken: true,
   maxItems: 15,
   maxAgeMs: 48 * 3600e3,
@@ -94,12 +149,18 @@ export const instagramStormCentre = {
     if (!token) throw new Error("disabled_no_token");
     const uid = await igUserId(env, stub, token, f);
     if (!uid) throw new Error("no_ig_user_id");
-    const fields = `business_discovery.username(${IG_TARGET}){media.limit(${this.maxItems}){id,caption,timestamp,permalink,media_type}}`;
-    const url = `${GRAPH}/${uid}?fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(token)}`;
-    const r = await f(url, { headers: UA });
-    const j = await r.json();
-    if (j.error) throw new Error("ig_" + (j.error.code || "err") + ":" + String(j.error.message || "").slice(0, 50));
-    return igMediaToItems(((j.business_discovery || {}).media || {}).data || [], Date.now(), this.maxAgeMs, this.maxItems);
+    const now = Date.now(), out = [], errs = [];
+    for (const acct of IG_USERNAMES) {
+      try {
+        const fields = `business_discovery.username(${acct.user}){media.limit(${this.maxItems}){id,caption,timestamp,permalink,media_type}}`;
+        const r = await f(`${GRAPH}/${uid}?fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(token)}`, { headers: UA });
+        const j = await r.json();
+        if (j.error) throw new Error("ig_" + (j.error.code || "err"));
+        out.push(...igMediaToItems(((j.business_discovery || {}).media || {}).data || [], now, this.maxAgeMs, this.maxItems, acct.label, acct.user));
+      } catch (e) { errs.push(acct.user + ":" + String(e.message || e)); }
+    }
+    if (!out.length && errs.length) throw new Error(errs[0]);
+    return out;
   },
 };
 

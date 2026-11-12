@@ -1,7 +1,7 @@
 // Connector framework: YouTube feed parsing, UAE-observation classification, row building. Pure, no network.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseYouTubeFeed, youtubeStormCentre, instagramStormCentre, igMediaToItems } from "../src/lib/connectors.js";
+import { parseYouTubeFeed, parsePlaylistItems, youtubeStormCentre, instagramStormCentre, igMediaToItems } from "../src/lib/connectors.js";
 import { classifyItem, buildRows } from "../src/lib/community.js";
 
 const FEED = `<?xml version="1.0" encoding="UTF-8"?>
@@ -84,3 +84,46 @@ test("instagram connector fetchItems calls Business Discovery and normalizes med
   assert.equal(stub._c["ig:userId"], "17841000");            // resolved + cached (an id, not a credential)
   assert.equal(classifyItem(items[0].title).accept, true);   // Masafi + rain accepted
 });
+
+// ---- YouTube Data API path (replaces unreliable RSS); same extId so existing reports are preserved ----
+test("parsePlaylistItems maps snippet to normalized items with the bare videoId as extId", () => {
+  const json = { items: [
+    { snippet: { title: "الإمارات أمطار على العين", publishedAt: "2026-11-12T06:00:00Z", resourceId: { videoId: "abc123" } } },
+    { snippet: { title: "no video id", publishedAt: "2026-11-12T06:00:00Z", resourceId: {} } },
+  ] };
+  const items = parsePlaylistItems(json, { label: "Storm Centre (YouTube)", user: "storm_ae" });
+  assert.equal(items.length, 1);
+  assert.equal(items[0].extId, "abc123");                               // bare id = same scheme as RSS -> dedup preserved
+  assert.equal(items[0].url, "https://www.youtube.com/watch?v=abc123");
+  assert.equal(items[0].channel, "Storm Centre (YouTube)");
+});
+
+test("youtube connector uses the Data API when a key is present, caching the uploads playlist id", async () => {
+  const ts = new Date(Date.now() - 3600e3).toISOString();
+  const stub = { _c: {}, async cfgGet(k) { return this._c[k] || null; }, async cfgSet(k, v) { this._c[k] = v; return v; } };
+  let channelsCalls = 0;
+  const f = async (url) => {
+    if (url.includes("/channels?")) { channelsCalls++; return { json: async () => ({ items: [{ contentDetails: { relatedPlaylists: { uploads: "UU_up" } } }] }) }; }
+    if (url.includes("/playlistItems?")) return { json: async () => ({ items: [{ snippet: { title: "أمطار غزيرة على المسافي", publishedAt: ts, resourceId: { videoId: "vidX" } } }] }) };
+    return { ok: false, status: 404, json: async () => ({ error: { code: 404 } }) };
+  };
+  const items = await youtubeStormCentre.fetchItems({ fetch: f, env: { YOUTUBE_API_KEY: "KEY" }, stub });
+  assert.equal(youtubeStormCentre._via, "data_api");
+  assert.equal(items.length, 1);
+  assert.equal(items[0].extId, "vidX");
+  assert.equal(stub._c["yt:uploads:UCGLpsE0Q0m0-_jigv37CTrw"], "UU_up");  // uploads id cached (quota saving)
+  // second poll reuses the cached uploads id (no extra channels.list call)
+  await youtubeStormCentre.fetchItems({ fetch: f, env: { YOUTUBE_API_KEY: "KEY" }, stub });
+  assert.equal(channelsCalls, 1, "channels.list called once, then cached");
+});
+
+test("youtube connector falls back to RSS when no key is configured", async () => {
+  const f = async (url) => { assert.ok(url.includes("/feeds/videos.xml")); return { ok: true, text: async () => parseYouTubeFeedFixture() }; };
+  const items = await youtubeStormCentre.fetchItems({ fetch: f, env: {}, stub: null });
+  assert.equal(youtubeStormCentre._via, "rss");
+  assert.ok(items.length >= 1);
+});
+function parseYouTubeFeedFixture() {
+  const t = new Date(Date.now() - 3600e3).toISOString();
+  return `<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015"><entry><yt:videoId>rssVid</yt:videoId><title>أمطار على دبي</title><published>${t}</published></entry></feed>`;
+}
