@@ -399,9 +399,74 @@ async function handleCommunity(env, u) {
   }, 200, { "cache-control": "no-store" });
 }
 
+/* ===== Phase B: Instagram Business Discovery TEST (temporary, token-transient) =====
+   The production connector stays disabled. This proves one real Business Discovery call against a public account using a
+   DEV token the owner pastes into THIS page (never into chat). The token is used for the single call and NEVER stored or
+   echoed; only sanitized media (no token) is returned and cached for review. Remove these routes once Phase B is live. */
+const IG_GRAPH = "https://graph.facebook.com/v21.0";
+function scrub(s, token) { s = String(s == null ? "" : s); return token ? s.split(token).join("***") : s; }
+
+function handleIgTestPage() {
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Instagram Business Discovery test — UAE Rain Explorer</title><style>
+body{font:16px/1.5 system-ui,sans-serif;max-width:620px;margin:0 auto;padding:24px;background:#0e1a1f;color:#e6eef0}
+h1{font-size:20px;color:#7cc4d6} label{font-size:13px;color:#9bb0b8} input{width:100%;padding:12px;border-radius:10px;border:1px solid #28404a;background:#16262d;color:#e6eef0;font:inherit;margin-top:4px}
+button{margin-top:12px;padding:12px 18px;border-radius:10px;border:0;background:#0f4c5c;color:#fff;font:inherit;cursor:pointer;min-height:44px}
+.out{margin-top:16px;padding:12px;border-radius:10px;white-space:pre-wrap;word-break:break-word;font:13px/1.4 ui-monospace,Menlo,monospace}
+.ok{background:#12304f;border:1px solid #6db3ff} .err{background:#3a1414;border:1px solid #ff8a80} .muted{color:#9bb0b8;font-size:13px}</style></head>
+<body><h1>Instagram Business Discovery — test</h1>
+<p class="muted">Paste a <b>temporary development token</b> from Meta's Graph API Explorer. It is used for a single Business Discovery call and is <b>never stored, never shown, and never sent to chat</b>. Only sanitized results (no token) are returned.</p>
+<label>Temporary dev token</label>
+<input id="t" type="password" autocomplete="off" placeholder="EAAG... (short-lived user token)" aria-label="Dev token">
+<label style="display:block;margin-top:10px">Target public account</label>
+<input id="u" type="text" autocomplete="off" value="storm.center" aria-label="Target username">
+<button id="b">Run Business Discovery test</button>
+<div id="o" class="out muted" hidden></div>
+<script>
+const b=document.getElementById('b'),t=document.getElementById('t'),u=document.getElementById('u'),o=document.getElementById('o');
+b.onclick=async()=>{const tok=t.value.trim();if(!tok){show('Please paste the dev token first.','err');return;}
+b.disabled=true;b.textContent='Testing…';
+try{const r=await fetch('/api/ig-test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:tok,username:u.value.trim()||'storm.center'})});const j=await r.json();
+show(JSON.stringify(j,null,2), j.ok?'ok':'err'); if(j.ok){t.value='';}}
+catch(e){show('Network error: '+e.message,'err');}
+b.disabled=false;b.textContent='Run Business Discovery test';};
+function show(m,c){o.hidden=false;o.className='out '+c;o.textContent=m;}
+</script></body></html>`;
+  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+}
+
+async function handleIgTest(req, env) {
+  const stub = logStub(env);
+  let token = null, username = "storm.center";
+  if (req.method === "POST") { const body = await req.json().catch(() => ({})); token = body && body.token; if (body && body.username) username = String(body.username).replace(/^@/, "").trim(); }
+  if (!token) return json({ ok: false, error: "Paste a temporary dev token to run the test." }, 400);
+  if (!/^[A-Za-z0-9._-]{1,32}$/.test(username)) return json({ ok: false, error: "Invalid username." }, 400);
+  try {
+    // 1) resolve the querying IG Business/Creator account id from the token's Pages
+    const meR = await fetch(`${IG_GRAPH}/me/accounts?fields=instagram_business_account{id,username}&access_token=${encodeURIComponent(token)}`);
+    const meJ = await meR.json();
+    if (meJ.error) return json({ ok: false, step: "me_accounts", error: scrub(meJ.error.message, token), code: meJ.error.code || null, hint: "The token must belong to a Meta app whose Facebook Page is linked to YOUR Instagram Business/Creator account, with instagram_basic + pages_show_list + pages_read_engagement." }, 200);
+    const acct = (meJ.data || []).map((p) => p.instagram_business_account).find(Boolean);
+    if (!acct || !acct.id) return json({ ok: false, step: "me_accounts", error: "No Instagram Business/Creator account is linked to this token's Facebook Page(s).", hint: "In Meta, link your IG Business/Creator account to a Facebook Page, then regenerate the token." }, 200);
+    // 2) one Business Discovery call for the public target account
+    const fields = `business_discovery.username(${username}){username,media.limit(5){id,caption,timestamp,permalink,media_type}}`;
+    const bdR = await fetch(`${IG_GRAPH}/${acct.id}?fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(token)}`);
+    const bdJ = await bdR.json();
+    if (bdJ.error) return json({ ok: false, step: "business_discovery", error: scrub(bdJ.error.message, token), code: bdJ.error.code || null, hint: "Business Discovery only reads public Business/Creator accounts. Confirm @" + username + " is a public professional account." }, 200);
+    const bd = bdJ.business_discovery || {};
+    const media = ((bd.media || {}).data || []).map((m) => ({ id: m.id, media_type: m.media_type || null, timestamp: m.timestamp || null, permalink: m.permalink || null, captionPreview: (m.caption || "").replace(/\s+/g, " ").slice(0, 180), captionChars: (m.caption || "").length }));
+    const sanitized = { ok: true, queriedByIgAccount: acct.username ? "@" + acct.username : "(your linked IG business account)", target: "@" + username, resolvedUsername: bd.username || null, mediaCount: media.length, media, testedAt: Date.now() };
+    await stub.cfgSet("igTest:last", sanitized);          // sanitized only — no token is ever persisted
+    return json(sanitized, 200, { "cache-control": "no-store" });
+  } catch (e) { return json({ ok: false, error: scrub(e.message || e, token) }, 200); }
+}
+
 export default {
   async fetch(req, env, ctx) {
     const u = new URL(req.url);
+    if (u.pathname === "/api/ig-test-setup" && req.method === "GET") return handleIgTestPage();
+    if (u.pathname === "/api/ig-test" && req.method === "POST") return handleIgTest(req, env);
+    if (u.pathname === "/api/ig-test-result") return json((await logStub(env).cfgGet("igTest:last")) || { ok: false, error: "No test has been run yet." }, 200, { "cache-control": "no-store" });
     if (u.pathname === "/api/telegram-webhook" && req.method === "POST") return handleTelegramWebhook(req, env);
     if (u.pathname === "/api/telegram-setup" && req.method === "GET") return handleSetupPage();
     if (u.pathname === "/api/telegram-admin") return handleTelegramAdmin(req, env, u);
@@ -418,7 +483,7 @@ export default {
       // Public endpoint: expose only the channel title, never the private Telegram chat id.
       const tgStatus = { configured: !!token, registered: !!wok, botUsername: buser || null, webhook: wstatus || null, authorizedChats: (authChats || []).map((c) => ({ title: c.title })) };
       const connectors = await stub.connStates(PULL_CONNECTORS.map((c) => c.id));
-      return json({ now: Date.now(), build: "2026-11-12-source-metadata2", ...h, telegram: tgStatus, connectors }, 200, { "cache-control": "no-store" });
+      return json({ now: Date.now(), build: "2026-11-12-ig-test-prep", ...h, telegram: tgStatus, connectors }, 200, { "cache-control": "no-store" });
     }
     if (u.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);
