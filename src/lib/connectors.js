@@ -137,18 +137,48 @@ export const youtubeStormCentre = {
 };
 
 /* ============================ Instagram (Business Discovery, disabled until authorized) ============================ */
-const GRAPH = "https://graph.facebook.com/v21.0";
+// Current supported stable Graph API version (confirmed Nov 2026; v21.0 is ~2 years old and deprecated). Used by BOTH
+// the production connector and the test endpoint so they never diverge.
+export const GRAPH_VERSION = "v26.0";
+const GRAPH = "https://graph.facebook.com/" + GRAPH_VERSION;
+// The one public account this app is allowed to read. Server-locked — never taken from request input.
+export const IG_TARGET = "storm.center";
 
-async function igUserId(env, stub, token, f) {
-  let id = stub ? await stub.cfgGet("ig:userId") : null;
-  if (id) return id;
-  const r = await f(`${GRAPH}/me/accounts?fields=instagram_business_account{id,username}&access_token=${encodeURIComponent(token)}`);
-  const j = await r.json();
+// Every Graph call sends the token ONLY in the Authorization header — never in the URL, query string, redirect or log.
+// `path` must never contain the token. Returns parsed JSON.
+export async function graphGet(path, token, f, headers = {}) {
+  const r = await f(GRAPH + path, { headers: { ...headers, Authorization: "Bearer " + token } });
+  return r.json();
+}
+// Remove a token from any text so it can never leak through an error/message.
+const scrubTok = (s, token) => { s = String(s == null ? "" : s); return token ? s.split(token).join("***") : s; };
+
+// Resolve the querying IG Business/Creator account ({id, username}) from the token's Pages. Token stays in the header.
+async function igResolveAccount(token, f, stub) {
+  const cached = stub ? await stub.cfgGet("ig:userId") : null;
+  const j = await graphGet(`/me/accounts?fields=instagram_business_account{id,username}`, token, f, UA);
   if (j.error) throw new Error("ig_me_" + (j.error.code || "err"));
   const acct = (j.data || []).map((p) => p.instagram_business_account).find(Boolean);
-  id = acct && acct.id;
-  if (id && stub) await stub.cfgSet("ig:userId", id);
-  return id || null;
+  if (acct && acct.id && stub && !cached) await stub.cfgSet("ig:userId", acct.id);
+  return acct && acct.id ? { id: acct.id, username: acct.username || null } : null;
+}
+
+// Pure, server-locked Business Discovery. Target is ALWAYS IG_TARGET (any other username is refused). Token travels only
+// in the Authorization header. Returns a SANITIZED result (never the token, the request URL or the auth header).
+export async function igDiscover({ token, fetchImpl, username = IG_TARGET, maxItems = 5, stub = null }) {
+  if (!token) return { ok: false, error: "A token is required." };
+  if (username !== IG_TARGET) return { ok: false, error: "Target is locked to the configured account; other usernames are not allowed." };
+  const f = fetchImpl || fetch;
+  try {
+    const acct = await igResolveAccount(token, f, stub);
+    if (!acct) return { ok: false, step: "me_accounts", error: "No Instagram Business/Creator account is linked to this token's Facebook Page(s).", hint: "Link your IG Business/Creator account to a Facebook Page, then regenerate the token." };
+    const fields = `business_discovery.username(${IG_TARGET}){username,media.limit(${maxItems}){id,caption,timestamp,permalink,media_type}}`;
+    const j = await graphGet(`/${acct.id}?fields=${encodeURIComponent(fields)}`, token, f, UA);
+    if (j.error) return { ok: false, step: "business_discovery", code: j.error.code || null, error: scrubTok(j.error.message, token), hint: "Business Discovery only reads public professional accounts. Confirm @" + IG_TARGET + " is a public Business/Creator account." };
+    const bd = j.business_discovery || {};
+    const media = ((bd.media || {}).data || []).map((m) => ({ id: m.id, media_type: m.media_type || null, timestamp: m.timestamp || null, permalink: m.permalink || null, captionPreview: (m.caption || "").replace(/\s+/g, " ").slice(0, 180), captionChars: (m.caption || "").length }));
+    return { ok: true, queriedByIgAccount: acct.username ? "@" + acct.username : "(your linked IG business account)", target: "@" + IG_TARGET, resolvedUsername: bd.username || null, mediaCount: media.length, media, testedAt: Date.now() };
+  } catch (e) { return { ok: false, error: scrubTok(e.message || e, token) }; }
 }
 // Pure: Business Discovery media list → normalized items. Unit-tested.
 export function igMediaToItems(media, now = Date.now(), maxAgeMs = 48 * 3600e3, maxItems = 15, label = null, user = null) {
@@ -171,14 +201,14 @@ export const instagramStormCentre = {
     const f = ctx.fetch || fetch, env = ctx.env, stub = ctx.stub;
     const token = await igToken(env);
     if (!token) throw new Error("disabled_no_token");
-    const uid = await igUserId(env, stub, token, f);
+    const resolved = await igResolveAccount(token, f, stub);
+    const uid = resolved && resolved.id;
     if (!uid) throw new Error("no_ig_user_id");
     const now = Date.now(), out = [], errs = [];
     for (const acct of IG_USERNAMES) {
       try {
         const fields = `business_discovery.username(${acct.user}){media.limit(${this.maxItems}){id,caption,timestamp,permalink,media_type}}`;
-        const r = await f(`${GRAPH}/${uid}?fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(token)}`, { headers: UA });
-        const j = await r.json();
+        const j = await graphGet(`/${uid}?fields=${encodeURIComponent(fields)}`, token, f, UA);   // token in header, not URL
         if (j.error) throw new Error("ig_" + (j.error.code || "err"));
         out.push(...igMediaToItems(((j.business_discovery || {}).media || {}).data || [], now, this.maxAgeMs, this.maxItems, acct.label, acct.user));
       } catch (e) { errs.push(acct.user + ":" + String(e.message || e)); }
