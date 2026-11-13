@@ -149,22 +149,51 @@ export function verifyReport(report, scanFrames, metars) {
 // ---- generic connector support: classify a public item (e.g. a YouTube title) and build report rows ----
 // Only genuine UAE weather OBSERVATIONS pass: a recognizable UAE place + an observable event, and not a
 // forecast / advert / archival clip / non-UAE report. Pure + testable; shares the same parser as Telegram.
-const FOREIGN = ["السعودية", "مكة", "المدينة المنورة", "جدة", "الرياض", "الدمام", "القصيم", "سلطنة عمان", "مسقط", "قطر", "الدوحة", "الكويت", "البحرين", "المنامة", "اليمن", "صنعاء", "مصر", "العراق", "سوريا", "لبنان", "السودان", "saudi", "makkah", "mecca", "jeddah", "riyadh", "oman", "muscat", "qatar", "doha", "kuwait", "bahrain", "yemen", "egypt"];
+const FOREIGN = ["السعودية", "مكة", "المدينة المنورة", "جدة", "الرياض", "الدمام", "القصيم", "الطائف", "عكاظ", "سلطنة عمان", "عمان", "مسقط", "قطر", "الدوحة", "الكويت", "البحرين", "المنامة", "اليمن", "صنعاء", "مصر", "العراق", "سوريا", "لبنان", "الاردن", "السودان", "saudi", "makkah", "mecca", "jeddah", "riyadh", "taif", "oman", "muscat", "qatar", "doha", "kuwait", "bahrain", "yemen", "egypt", "iraq", "jordan"];
 const FORECAST = ["توقعات", "متوقع", "المتوقع", "غدا", "الغد", "خلال الساعات القادمة", "ستشهد", "forecast", "expected", "outlook"];
 const PROMO = ["اشترك", "للاعلان", "للإعلان", "اعلان", "إعلان", "للتواصل", "رابط الاشتراك", "رعاية", "subscribe", "sponsor"];
 const OLD = ["ارشيف", "أرشيف", "العام الماضي", "قبل سنة", "قبل عام", "منذ سنوات", "throwback", "archive"];
 const UAE_MARK = ["الامارات", "uae", "emirates"];
 const hasAny = (arr, na, en) => arr.some((w) => (/[؀-ۿ]/.test(w) ? na.includes(normAr(w)) : en.includes(w)));
 
+// A single real observation names a handful of areas; a post that resolves to this many distinct places is almost
+// always a promotional hashtag dump (every Gulf city tagged for reach), so it is treated as location-unverified.
+const SPAM_PLACE_CAP = 5;
+
+// Isolate the weather-event BODY from the promotional/hashtag tail. Instagram captions put the real text first, then a
+// run of "dot-only" lines, then a block tagging every Gulf country/city for reach. Those trailing tags are NOT locations
+// of the reported event, so location + foreign-country detection must run on the body alone. A caption with no such tail
+// (e.g. a YouTube title or a Telegram message) is returned unchanged, so those sources are unaffected.
+export function eventBody(text) {
+  const raw = text || "";
+  // 1) cut at the first run of >=2 dot-only lines (the Instagram "." separator before the hashtag dump)
+  const sep = raw.search(/(?:\r?\n[ \t]*[.·•・٠-٩]+[ \t]*){2,}/);
+  let body = sep > 0 ? raw.slice(0, sep) : raw;
+  // 2) fallback for captions with no dot separator: drop a trailing run of >=4 consecutive hashtags (a promo block)
+  body = body.replace(/(?:(?:^|\s)#[^\s#]+){4,}\s*$/u, " ");
+  body = body.trim();
+  return body || raw;   // never return empty — fall back to the whole text
+}
+
 export function classifyItem(title) {
-  const raw = title || "", en = " " + normEn(raw) + " ", na = " " + normAr(raw) + " ";
-  const hasUAE = UAE_MARK.some((w) => (/[؀-ۿ]/.test(w) ? na.includes(normAr(w)) : en.includes(w)));
-  if (hasAny(FOREIGN, na, en) && !hasUAE) return { accept: false, reason: "non_uae" };
-  if (hasAny(FORECAST, na, en)) return { accept: false, reason: "forecast" };
-  if (hasAny(PROMO, na, en)) return { accept: false, reason: "promo" };
-  if (hasAny(OLD, na, en)) return { accept: false, reason: "old" };
-  const parsed = extractReport(raw);
-  if (!parsed.hasLocation) return { accept: false, reason: "no_uae_location", parsed };
+  const raw = title || "";
+  const body = eventBody(raw);
+  const en = " " + normEn(body) + " ", na = " " + normAr(body) + " ";
+  const parsed = extractReport(body);                       // locations/events from the event body only — tags excluded
+  // "UAE-relevant" means a UAE place/emirate is named in the body, or the body carries an explicit UAE marker —
+  // NOT merely that "#الامارات" appears in a promo tag block (that tail is already stripped from `body`).
+  const uaeInBody = parsed.places.length > 0 || parsed.emirates.length > 0
+    || UAE_MARK.some((w) => (/[؀-ۿ]/.test(w) ? na.includes(normAr(w)) : en.includes(w)));
+  // Foreign event: a non-UAE country drives the body and no UAE location is present -> not a UAE report. A post that
+  // genuinely names a UAE place (even alongside a foreign one) is kept, and only its UAE place(s) are pinned.
+  if (hasAny(FOREIGN, na, en) && !uaeInBody) return { accept: false, reason: "non_uae", parsed };
+  if (hasAny(FORECAST, na, en)) return { accept: false, reason: "forecast", parsed };
+  if (hasAny(PROMO, na, en)) return { accept: false, reason: "promo", parsed };
+  if (hasAny(OLD, na, en)) return { accept: false, reason: "old", parsed };
+  if (!parsed.hasLocation) return { accept: false, reason: "no_uae_location", parsed };   // location-unverified, no pins
+  // Safeguard: never turn a cluster of place names (a hashtag block that slipped through) into many map pins.
+  const distinct = parsed.places.length + parsed.emirates.filter((em) => !parsed.places.some((p) => p.em === em)).length;
+  if (distinct >= SPAM_PLACE_CAP) return { accept: false, reason: "location_spam", parsed };
   if (parsed.event === "unknown") return { accept: false, reason: "no_observable_event", parsed };
   return { accept: true, reason: "ok", parsed };
 }
@@ -173,7 +202,7 @@ export function classifyItem(title) {
 // supplies a precise observation time (YouTube titles carry a date only, so publication time is authoritative).
 export function buildRows(opts) {
   const { source, extId, channel, channelUser = null, url = null, title, publishedMs, observedMs = null } = opts;
-  const parsed = extractReport(title || "");
+  const parsed = extractReport(eventBody(title || ""));      // body only, so promo-tag place names never become pins
   return parsed.places.map((place) => ({
     id: `${source}:${extId}:${place.id}`,
     source, channel, channelUser, msgId: null,

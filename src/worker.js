@@ -57,6 +57,7 @@ async function collect(env) {
   try { await ensureWebhook(env, stub); } catch (e) { errors.push("telegram: " + (e.message || e)); } // self-heals the webhook once the token secret exists
   try { await runConnectors(env, stub, errors); } catch (e) { errors.push("connectors: " + (e.message || e)); }
   try { await reparseCommunityOnce(stub); } catch (e) { errors.push("reparse: " + (e.message || e)); }
+  try { await quarantineIgPromoOnce(stub); } catch (e) { errors.push("ig-cleanup: " + (e.message || e)); }
   if (errors.length) await stub.noteErrors(at, errors);
 }
 
@@ -99,6 +100,38 @@ async function reparseCommunityOnce(stub) {
   if (toInsert.length) await stub.saveReports(toInsert);
   for (const id of toDelete) await stub.deleteCommunity(id);
   await stub.cfgSet("maint:reparseV2", { at: Date.now(), inserted: toInsert.length, deleted: toDelete.length });
+}
+
+// One-time maintenance: remove the false UAE pins generated before the promotional-hashtag fix. A Gulf-wide account
+// (@storm.center) tags every emirate on posts about rain in OTHER countries; the earlier classifier read those promo
+// tags as UAE locations. Re-run the CORRECTED classifier over every stored Instagram post and quarantine only the pins
+// it no longer accepts: a post the corrected classifier rejects outright loses all its rows; a post it still accepts
+// keeps only the places its event body actually names. Only source="instagram" is touched — YouTube and Telegram rows
+// are never read or changed. A compact audit (counts + quarantined ids) is kept in config. Guarded to run exactly once.
+async function quarantineIgPromoOnce(stub) {
+  if (await stub.cfgGet("maint:igPromoCleanupV1")) return;
+  const rows = (await stub.communityAll()).filter((r) => r.source === "instagram");
+  if (!rows.length) { await stub.cfgSet("maint:igPromoCleanupV1", { at: Date.now(), skipped: "no_instagram_rows" }); return; }
+  const groups = new Map();                       // key: extId (id between "instagram:" and ":placeId")
+  for (const r of rows) {
+    const extId = r.id.slice(r.source.length + 1, r.id.lastIndexOf(":"));
+    if (!groups.has(extId)) groups.set(extId, []);
+    groups.get(extId).push(r);
+  }
+  const toDelete = []; let postsQuarantined = 0, postsKept = 0, rowsKept = 0;
+  for (const [extId, grp] of groups.entries()) {
+    const cls = classifyItem(grp[0].text || "");
+    const validIds = cls.accept
+      ? new Set(buildRows({ source: "instagram", extId, channel: grp[0].channel, title: grp[0].text || "", publishedMs: grp[0].publish_ms }).map((x) => x.placeId))
+      : new Set();
+    if (!cls.accept) postsQuarantined++; else postsKept++;
+    for (const r of grp) { if (!validIds.has(r.place_id)) toDelete.push(r.id); else rowsKept++; }
+  }
+  for (const id of toDelete) await stub.deleteCommunity(id);
+  await stub.cfgSet("maint:igPromoCleanupV1", {
+    at: Date.now(), postsScanned: groups.size, postsQuarantined, postsKept,
+    rowsQuarantined: toDelete.length, rowsPreserved: rowsKept, quarantinedIds: toDelete.slice(0, 50),
+  });
 }
 
 // Run each pull connector in isolation: one failure is recorded in that connector's health and never affects the
@@ -417,11 +450,13 @@ export default {
     if (u.pathname === "/api/scan") return handleScan(env);
     if (u.pathname === "/api/health") {
       const stub = logStub(env);
-      const [h, token, wok, buser, wstatus, authChats] = await Promise.all([stub.health(), getToken(env, stub), stub.cfgGet("webhookOk"), stub.cfgGet("botUsername"), stub.cfgGet("webhookStatus"), stub.cfgGet("authChats")]);
+      const [h, token, wok, buser, wstatus, authChats, igCleanup] = await Promise.all([stub.health(), getToken(env, stub), stub.cfgGet("webhookOk"), stub.cfgGet("botUsername"), stub.cfgGet("webhookStatus"), stub.cfgGet("authChats"), stub.cfgGet("maint:igPromoCleanupV1")]);
       // Public endpoint: expose only the channel title, never the private Telegram chat id.
       const tgStatus = { configured: !!token, registered: !!wok, botUsername: buser || null, webhook: wstatus || null, authorizedChats: (authChats || []).map((c) => ({ title: c.title })) };
       const connectors = await stub.connStates(PULL_CONNECTORS.map((c) => c.id));
-      return json({ now: Date.now(), build: "2026-11-13-ig-live", ...h, telegram: tgStatus, connectors }, 200, { "cache-control": "no-store" });
+      // Audit of the one-time false-positive cleanup (counts only; no private data).
+      const maint = igCleanup ? { igPromoCleanup: { at: igCleanup.at, postsScanned: igCleanup.postsScanned, postsQuarantined: igCleanup.postsQuarantined, postsKept: igCleanup.postsKept, rowsQuarantined: igCleanup.rowsQuarantined, rowsPreserved: igCleanup.rowsPreserved } } : null;
+      return json({ now: Date.now(), build: "2026-11-13-ig-promo-fix", ...h, telegram: tgStatus, connectors, maint }, 200, { "cache-control": "no-store" });
     }
     if (u.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);

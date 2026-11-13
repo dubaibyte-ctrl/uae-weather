@@ -1,8 +1,57 @@
 // Community report parsing, signatures, and verification. Pure functions; no network.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { extractReport, reportSignature, verifyReport, normAr } from "../src/lib/community.js";
+import { extractReport, reportSignature, verifyReport, normAr, classifyItem, buildRows, eventBody } from "../src/lib/community.js";
 import { llToMosaic, GRID } from "../public/lib/radar-geo.js";
+
+// The real @storm.center captions that caused the Nov-13 false-positive incident: a post about rain in SAUDI ARABIA
+// (Taif / Souq Okaz) with a promotional hashtag block tagging every Gulf emirate. These must NOT become UAE rain pins.
+const IG_SAUDI_1 = "#السعودية 🇸🇦 من امطار وسبول سوق عكاظ #الطائف \nتصوير برق الطائف #مركز_العاصفة_طقس_الخليج \n.\n.\n.\n.\n.\n#السعودية #الامارات الكويت سلطنة_عمان البحرين العراق الاردن مصر مركز_العاصفة ابوظبي مركز_العاصفة_طقس_الخليج دبي العين الشارقة عجمان الفجيرة راس_الخيمة سناب شات EAi";
+const IG_SAUDI_2 = "لقطات من امطار #السعودية 🇸🇦 #مركز_العاصفة_طقس_الخليج \n.\n.\n.\n.\n#السعودية #الامارات #الكويت سلطنة_عمان البحرين العراق الاردن مصر مركز_العاصفة ابوظبي مركز_العاصفة_طقس_الخليج دبي العين الشارقة عجمان الفجيرة راس_الخيمة سناب شات EAi";
+
+test("IG promo-hashtag incident: Saudi-rain posts with all-Gulf hashtag blocks are rejected, never pinned in the UAE", () => {
+  for (const cap of [IG_SAUDI_1, IG_SAUDI_2]) {
+    const c = classifyItem(cap);
+    assert.equal(c.accept, false, "a Saudi-rain post must not be accepted as a UAE report");
+    assert.equal(c.reason, "non_uae", "rejected because the event is in a non-UAE country");
+    assert.equal(buildRows({ source: "instagram", extId: "x", channel: "IG", title: cap, publishedMs: 1 }).length, 0, "zero UAE pins");
+  }
+});
+
+test("eventBody isolates the caption body from the promotional hashtag/dot tail", () => {
+  const body = eventBody(IG_SAUDI_1);
+  assert.ok(body.includes("الطائف"), "keeps the real event text");
+  assert.ok(!/راس_الخيمه|راس_الخيمة/.test(normAr(body) + body), "drops the trailing all-emirates hashtag block");
+});
+
+test("foreign exclusion uses event context, not blanket country-name rejection", () => {
+  // A UAE city named in the body is kept even when a foreign country also appears; only the UAE place is pinned.
+  const c = classifyItem("أمطار غزيرة الآن على مليحة بينما تمطر #السعودية أيضا");
+  assert.equal(c.accept, true);
+  assert.deepEqual(buildRows({ source: "instagram", extId: "y", channel: "IG", title: "أمطار غزيرة الآن على مليحة بينما تمطر #السعودية أيضا", publishedMs: 1 }).map((r) => r.placeId), ["mleiha"]);
+});
+
+test("a genuine UAE caption with a promo tail still resolves its real location (hashtags preserved when they are the body)", () => {
+  const cap = "أمطار غزيرة الآن على حتا \n.\n.\n.\n#الامارات ابوظبي دبي الشارقة عجمان الفجيرة راس_الخيمة العين";
+  const c = classifyItem(cap);
+  assert.equal(c.accept, true);
+  assert.deepEqual(buildRows({ source: "instagram", extId: "z", channel: "IG", title: cap, publishedMs: 1 }).map((r) => r.placeId), ["hatta"]);
+});
+
+test("safeguard: a block of 5+ place names (hashtag spam) is rejected as location-unverified, never accepted as many pins", () => {
+  // Six emirate names strung together with a rain word — the promotional-dump signature. classifyItem gates this
+  // before buildRows is ever called, so the pipeline produces no pins.
+  const spam = "ابوظبي دبي الشارقة عجمان راس الخيمة الفجيرة العين امطار";
+  const c = classifyItem(spam);
+  assert.equal(c.accept, false);
+  assert.equal(c.reason, "location_spam");
+});
+
+test("YouTube-style titles are unaffected by the body/tail split (no hashtag tail present)", () => {
+  const c = classifyItem("الإمارات : الان هطول أمطار رعدية غزيرة على مليحة وحمدة");
+  assert.equal(c.accept, true);
+  assert.deepEqual(buildRows({ source: "youtube", extId: "u", channel: "YT", title: "الإمارات : الان هطول أمطار رعدية غزيرة على مليحة وحمدة", publishedMs: 1 }).map((r) => r.placeId).sort(), ["hamda", "mleiha"]);
+});
 
 test("extracts events and UAE places in English and Arabic", () => {
   const a = extractReport("Heavy rain in Mirdif and Al Khawaneej right now!");
