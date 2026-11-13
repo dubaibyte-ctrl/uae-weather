@@ -8,9 +8,10 @@
   "durable_objects": { "bindings": [{ "name": "LOG", "class_name": "ValidationLog" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ValidationLog"] }],
   "observability": { "enabled": true },
-  // YouTube Data API key — value lives in the account Secrets Store (not the repo, not the DO).
-  // The binding is in-repo so every Git build re-attaches it automatically; it survives redeploys by design.
+  // API credentials — values live in the account Secrets Store (not the repo, not the DO).
+  // The bindings are in-repo so every Git build re-attaches them automatically; they survive redeploys by design.
   "secrets_store_secrets": [
-    { "binding": "YOUTUBE_API_KEY", "store_id": "d35febe16e6b4d4ca1ef38e63f02a5f7", "secret_name": "YOUTUBE_API_KEY" }
+    { "binding": "YOUTUBE_API_KEY", "store_id": "d35febe16e6b4d4ca1ef38e63f02a5f7", "secret_name": "YOUTUBE_API_KEY" },
+    { "binding": "IG_ACCESS_TOKEN", "store_id": "d35febe16e6b4d4ca1ef38e63f02a5f7", "secret_name": "IG_ACCESS_TOKEN" }
   ]
 }
