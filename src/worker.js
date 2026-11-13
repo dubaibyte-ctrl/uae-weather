@@ -11,8 +11,7 @@ import { fetchIndex, probeFrame } from "./lib/radar.js";
 import { scanFrame, scanCoverage } from "./lib/scan.js";
 import { GRID, ECHO_ALPHA, MIN_CLUSTER_PX } from "../public/lib/radar-geo.js";
 import { extractReport, reportSignature, verifyReport, classifyItem, buildRows } from "./lib/community.js";
-import { PULL_CONNECTORS, YT_CHANNELS, canonicalChannelUrl, igDiscover, IG_TARGET } from "./lib/connectors.js";
-import { igTestGuard, MAX_BODY } from "./lib/ig-test.js";
+import { PULL_CONNECTORS, YT_CHANNELS, canonicalChannelUrl } from "./lib/connectors.js";
 
 export { ValidationLog };
 
@@ -400,78 +399,12 @@ async function handleCommunity(env, u) {
   }, 200, { "cache-control": "no-store" });
 }
 
-/* ===== Phase B: Instagram Business Discovery TEST (temporary, token-transient, hardened) =====
-   The production connector stays disabled. This proves ONE Business Discovery call against the locked target using a DEV
-   token the owner pastes into THIS page (never chat). The token travels ONLY in the Authorization header (igDiscover),
-   is used once and NEVER stored, echoed, logged or placed in any URL. Only sanitized media is returned/cached. These three
-   routes self-disable once `igTest:closed` is set, and are removed entirely before production is enabled. */
-const SEC_JSON = { "cache-control": "no-store", "referrer-policy": "no-referrer", "x-frame-options": "DENY", "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'" };
-const SEC_PAGE = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer", "x-frame-options": "DENY", "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'" };
-const igTestClosed = (stub) => stub.cfgGet("igTest:closed");
-
-function handleIgTestPage() {
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Instagram Business Discovery test — UAE Rain Explorer</title><style>
-body{font:16px/1.5 system-ui,sans-serif;max-width:620px;margin:0 auto;padding:24px;background:#0e1a1f;color:#e6eef0}
-h1{font-size:20px;color:#7cc4d6} label{font-size:13px;color:#9bb0b8} input{width:100%;padding:12px;border-radius:10px;border:1px solid #28404a;background:#16262d;color:#e6eef0;font:inherit;margin-top:4px}
-button{margin-top:12px;padding:12px 18px;border-radius:10px;border:0;background:#0f4c5c;color:#fff;font:inherit;cursor:pointer;min-height:44px}
-.out{margin-top:16px;padding:12px;border-radius:10px;white-space:pre-wrap;word-break:break-word;font:13px/1.4 ui-monospace,Menlo,monospace}
-.ok{background:#12304f;border:1px solid #6db3ff} .err{background:#3a1414;border:1px solid #ff8a80} .muted{color:#9bb0b8;font-size:13px} code{color:#7cc4d6}</style></head>
-<body><h1>Instagram Business Discovery — test</h1>
-<p class="muted">Paste a <b>temporary development token</b> from Meta's Graph API Explorer. It is sent only in an <code>Authorization</code> header for a single Business Discovery call, and is <b>never stored, shown, logged or sent to chat</b>. The target is locked to <code>@${IG_TARGET}</code>. Only sanitized results (no token) are returned.</p>
-<label>Temporary dev token</label>
-<input id="t" type="password" autocomplete="off" placeholder="EAAG... (short-lived user token)" aria-label="Dev token">
-<button id="b">Run Business Discovery test</button>
-<div id="o" class="out muted" hidden></div>
-<script>
-const b=document.getElementById('b'),t=document.getElementById('t'),o=document.getElementById('o');
-b.onclick=async()=>{const tok=t.value.trim();if(!tok){show('Please paste the dev token first.','err');return;}
-b.disabled=true;b.textContent='Testing…';
-try{const r=await fetch('/api/ig-test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:tok})});const j=await r.json();
-show(JSON.stringify(j,null,2), j.ok?'ok':'err'); if(j.ok){t.value='';}}
-catch(e){show('Network error: '+e.message,'err');}
-b.disabled=false;b.textContent='Run Business Discovery test';};
-function show(m,c){o.hidden=false;o.className='out '+c;o.textContent=m;}
-</script></body></html>`;
-  return new Response(html, { headers: SEC_PAGE });
-}
-
-// Simple fixed-window rate limit in the DO (not a credential). Max 8 test calls / 60s.
-async function igRateLimited(stub) {
-  const now = Date.now(), win = 60000, max = 8;
-  const arr = ((await stub.cfgGet("igTest:rl")) || []).filter((ts) => now - ts < win);
-  if (arr.length >= max) return true;
-  arr.push(now); await stub.cfgSet("igTest:rl", arr);
-  return false;
-}
-
-async function handleIgTest(req, env) {
-  const stub = logStub(env);
-  if (await igTestClosed(stub)) return json({ ok: false, error: "Test endpoint is closed." }, 404, SEC_JSON);
-  const expectedOrigin = new URL(req.url).origin;
-  // Transport-level guard (method, content-type, same-origin, declared size) — never sees the token.
-  const pre = igTestGuard({ method: req.method, contentType: req.headers.get("content-type"), origin: req.headers.get("origin"), expectedOrigin, contentLength: req.headers.get("content-length"), username: null });
-  if (pre) return json(pre.body, pre.status, SEC_JSON);
-  if (await igRateLimited(stub)) return json({ ok: false, error: "Too many requests; try again shortly." }, 429, SEC_JSON);
-  const raw = await req.text();
-  if (raw.length > MAX_BODY) return json({ ok: false, error: "Request body too large." }, 413, SEC_JSON);
-  let body; try { body = JSON.parse(raw || "{}"); } catch { return json({ ok: false, error: "Invalid JSON." }, 400, SEC_JSON); }
-  const token = body && body.token;
-  const username = body && body.username != null ? String(body.username).replace(/^@/, "").trim() : null;
-  const post = igTestGuard({ method: "POST", contentType: "application/json", origin: expectedOrigin, expectedOrigin, contentLength: raw.length, username });  // rejects any non-locked target
-  if (post) return json(post.body, post.status, SEC_JSON);
-  if (!token) return json({ ok: false, error: "Paste a temporary dev token to run the test." }, 400, SEC_JSON);
-  const result = await igDiscover({ token, fetchImpl: fetch, stub });   // target locked to IG_TARGET inside; token in header only
-  if (result.ok) await stub.cfgSet("igTest:last", result);             // sanitized only — token never persisted
-  return json(result, 200, SEC_JSON);
-}
+// Phase B Business Discovery test endpoints were removed after the live test passed (2026-11-13), before enabling the
+// production Instagram connector. The pure helpers (igDiscover, igTestGuard) remain unit-tested in the lib modules.
 
 export default {
   async fetch(req, env, ctx) {
     const u = new URL(req.url);
-    if (u.pathname === "/api/ig-test-setup" && req.method === "GET") { if (await logStub(env).cfgGet("igTest:closed")) return json({ error: "not found" }, 404, SEC_JSON); return handleIgTestPage(); }
-    if (u.pathname === "/api/ig-test") return handleIgTest(req, env);   // any method; non-POST is rejected (405) inside
-    if (u.pathname === "/api/ig-test-result") { const s = logStub(env); if (await s.cfgGet("igTest:closed")) return json({ error: "not found" }, 404, SEC_JSON); return json((await s.cfgGet("igTest:last")) || { ok: false, error: "No test has been run yet." }, 200, SEC_JSON); }
     if (u.pathname === "/api/telegram-webhook" && req.method === "POST") return handleTelegramWebhook(req, env);
     if (u.pathname === "/api/telegram-setup" && req.method === "GET") return handleSetupPage();
     if (u.pathname === "/api/telegram-admin") return handleTelegramAdmin(req, env, u);
@@ -488,7 +421,7 @@ export default {
       // Public endpoint: expose only the channel title, never the private Telegram chat id.
       const tgStatus = { configured: !!token, registered: !!wok, botUsername: buser || null, webhook: wstatus || null, authorizedChats: (authChats || []).map((c) => ({ title: c.title })) };
       const connectors = await stub.connStates(PULL_CONNECTORS.map((c) => c.id));
-      return json({ now: Date.now(), build: "2026-11-12-ig-test-hardened", ...h, telegram: tgStatus, connectors }, 200, { "cache-control": "no-store" });
+      return json({ now: Date.now(), build: "2026-11-13-ig-test-removed", ...h, telegram: tgStatus, connectors }, 200, { "cache-control": "no-store" });
     }
     if (u.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);
