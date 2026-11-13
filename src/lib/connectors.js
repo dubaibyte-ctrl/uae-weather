@@ -180,6 +180,32 @@ export async function igDiscover({ token, fetchImpl, username = IG_TARGET, maxIt
     return { ok: true, queriedByIgAccount: acct.username ? "@" + acct.username : "(your linked IG business account)", target: "@" + IG_TARGET, resolvedUsername: bd.username || null, mediaCount: media.length, media, testedAt: Date.now() };
   } catch (e) { return { ok: false, error: scrubTok(e.message || e, token) }; }
 }
+// TEMPORARY diagnostic (removed after the one-time source review): test Business Discovery accessibility for a FIXED
+// list of candidate usernames (the list is hard-coded in the Worker — never taken from request input). Resolves the
+// querying account once, then probes each candidate and returns a SANITIZED per-account result (accessibility,
+// follower/media counts and a few caption previews to judge UAE relevance) — never the token, request URL or auth header.
+export async function igProbe({ token, fetchImpl, usernames, stub = null, maxItems = 6 }) {
+  if (!token) return { ok: false, error: "A token is required." };
+  const f = fetchImpl || fetch;
+  let acct;
+  try { acct = await igResolveAccount(token, f, stub); } catch (e) { return { ok: false, step: "me_accounts", error: scrubTok(e.message || e, token) }; }
+  if (!acct) return { ok: false, step: "me_accounts", error: "No IG Business/Creator account is linked to this token." };
+  const accounts = [];
+  for (const uname of usernames) {
+    const u = String(uname).replace(/^@/, "");
+    if (!/^[A-Za-z0-9._]{1,40}$/.test(u)) { accounts.push({ username: u, ok: false, error: "invalid_username" }); continue; }
+    try {
+      const fields = `business_discovery.username(${u}){username,followers_count,media_count,media.limit(${maxItems}){caption,timestamp,media_type,permalink}}`;
+      const j = await graphGet(`/${acct.id}?fields=${encodeURIComponent(fields)}`, token, f, UA);   // token in header, not URL
+      if (j.error) { accounts.push({ username: u, ok: false, code: j.error.code || null, error: scrubTok(j.error.message, token) }); continue; }
+      const bd = j.business_discovery || {};
+      const recent = ((bd.media || {}).data || []).map((m) => ({ timestamp: m.timestamp || null, media_type: m.media_type || null, captionPreview: (m.caption || "").replace(/\s+/g, " ").slice(0, 160) }));
+      accounts.push({ username: u, ok: true, resolvedUsername: bd.username || null, followers: bd.followers_count ?? null, mediaCount: bd.media_count ?? null, recent });
+    } catch (e) { accounts.push({ username: u, ok: false, error: scrubTok(e.message || e, token) }); }
+  }
+  return { ok: true, queriedBy: acct.username ? "@" + acct.username : "(linked IG account)", accounts, at: Date.now() };
+}
+
 // Pure: Business Discovery media list → normalized items. Unit-tested.
 export function igMediaToItems(media, now = Date.now(), maxAgeMs = 48 * 3600e3, maxItems = 15, label = null, user = null) {
   return (media || [])

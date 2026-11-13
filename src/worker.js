@@ -11,7 +11,21 @@ import { fetchIndex, probeFrame } from "./lib/radar.js";
 import { scanFrame, scanCoverage } from "./lib/scan.js";
 import { GRID, ECHO_ALPHA, MIN_CLUSTER_PX } from "../public/lib/radar-geo.js";
 import { extractReport, reportSignature, verifyReport, classifyItem, buildRows } from "./lib/community.js";
-import { PULL_CONNECTORS, YT_CHANNELS, canonicalChannelUrl } from "./lib/connectors.js";
+import { PULL_CONNECTORS, YT_CHANNELS, canonicalChannelUrl, igProbe, igToken } from "./lib/connectors.js";
+
+// TEMPORARY source-review diagnostic (removed after candidate accounts are evaluated). Tests Business Discovery
+// accessibility for a FIXED candidate list — never from request input. POST + same-origin only; token never exposed.
+const IG_PROBE_CANDIDATES = ["storm_ae", "uaeweatherman", "alqasmyi", "storm.center"];
+const PROBE_SEC = { "cache-control": "no-store", "referrer-policy": "no-referrer", "x-frame-options": "DENY" };
+async function handleIgProbe(req, env) {
+  if (req.method !== "POST") return json({ ok: false, error: "POST only" }, 405, PROBE_SEC);
+  const origin = req.headers.get("origin"), expected = new URL(req.url).origin;
+  if (origin && origin !== expected) return json({ ok: false, error: "cross-origin not allowed" }, 403, PROBE_SEC);
+  const token = await igToken(env);
+  if (!token) return json({ ok: false, error: "no IG token bound" }, 503, PROBE_SEC);
+  const r = await igProbe({ token, fetchImpl: fetch, usernames: IG_PROBE_CANDIDATES, stub: logStub(env) });
+  return json(r, 200, PROBE_SEC);
+}
 
 export { ValidationLog };
 
@@ -447,6 +461,7 @@ export default {
       const days = Math.min(Math.max(parseInt(u.searchParams.get("days") || "30", 10) || 30, 1), 90);
       return json(await logStub(env).summary(days), 200, { "cache-control": "public, max-age=300" });
     }
+    if (u.pathname === "/api/ig-probe") return handleIgProbe(req, env);   // TEMP source-review diagnostic; removed after use
     if (u.pathname === "/api/scan") return handleScan(env);
     if (u.pathname === "/api/health") {
       const stub = logStub(env);
