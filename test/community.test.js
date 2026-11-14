@@ -38,13 +38,48 @@ test("a genuine UAE caption with a promo tail still resolves its real location (
   assert.deepEqual(buildRows({ source: "instagram", extId: "z", channel: "IG", title: cap, publishedMs: 1 }).map((r) => r.placeId), ["hatta"]);
 });
 
-test("safeguard: a block of 5+ place names (hashtag spam) is rejected as location-unverified, never accepted as many pins", () => {
-  // Six emirate names strung together with a rain word — the promotional-dump signature. classifyItem gates this
-  // before buildRows is ever called, so the pipeline produces no pins.
-  const spam = "ابوظبي دبي الشارقة عجمان راس الخيمة الفجيرة العين امطار";
-  const c = classifyItem(spam);
+test("widespread UAE rain named in the sentence is kept in full (not discarded by a place-count cap)", () => {
+  // A genuine widespread event naming several emirates in plain text must keep ALL its pins (req: don't auto-discard).
+  const cap = "أمطار غزيرة الآن على دبي والشارقة وعجمان وأم القيوين ورأس الخيمة";
+  const c = classifyItem(cap);
+  assert.equal(c.accept, true);
+  const pins = buildRows({ source: "instagram", extId: "w", channel: "IG", title: cap, publishedMs: 1 }).map((r) => r.placeId).sort();
+  assert.ok(pins.length >= 4, "keeps the multiple real locations: " + pins.join(","));
+});
+
+test("places that exist ONLY in a hashtag cluster are treated as promotional, not pinned", () => {
+  // No plain-text location — the emirate names appear solely as hashtags. This is the promo-dump signature.
+  const cap = "صور رائعة اليوم 📷 #ابوظبي #دبي #الشارقة #عجمان #الفجيرة #راس_الخيمة امطار";
+  const c = classifyItem(cap);
   assert.equal(c.accept, false);
   assert.equal(c.reason, "location_spam");
+  assert.equal(buildRows({ source: "instagram", extId: "h", channel: "IG", title: cap, publishedMs: 1 }).length, 0);
+});
+
+test("a caption that names only an emirate pins that emirate's main city (connector path)", () => {
+  // English "rain in <Emirate>" with no sub-place — the emirate IS the location, so pin its main city.
+  for (const [cap, id] of [["First autumn rain in Abu Dhabi, Zayed Port", "abu-dhabi"], ["Heavy rain in Dubai right now", "dubai"]]) {
+    const c = classifyItem(cap);
+    assert.equal(c.accept, true, cap);
+    assert.deepEqual(buildRows({ source: "instagram", extId: "e", channel: "IG", title: cap, publishedMs: 1 }).map((r) => r.placeId), [id]);
+  }
+});
+
+test("a specific sub-place still suppresses the generic emirate-city pin (connector path)", () => {
+  // The gazetteer-cleanup invariant must hold on the connector path too: specific places win, no generic Fujairah city.
+  const cap = "الإمارات : الان هطول أمطار الخير على ضدنا وشرم ودبا في الفجيرة";
+  const pins = buildRows({ source: "instagram", extId: "s", channel: "IG", title: cap, publishedMs: 1 }).map((r) => r.placeId).sort();
+  assert.deepEqual(pins, ["dadna", "dibba-al-fujairah", "sharm"]);
+  assert.ok(!pins.includes("fujairah"), "must not add the generic Fujairah city when specific places are named");
+});
+
+test("the same video reposted with different promo tags dedupes to one signature", () => {
+  const a = "أمطار غزيرة على مليحة الآن \n.\n.\n#الامارات #مركز_العاصفة دبي ابوظبي الشارقة عجمان الفجيرة";
+  const b = "أمطار غزيرة على مليحة الآن \n.\n.\n#uaeweather #rain الامارات ابوظبي دبي";
+  const ra = buildRows({ source: "instagram", extId: "ra", channel: "A", title: a, publishedMs: 1 })[0];
+  const rb = buildRows({ source: "instagram", extId: "rb", channel: "B", title: b, publishedMs: 1 })[0];
+  assert.equal(ra.placeId, "mleiha");
+  assert.equal(ra.sig, rb.sig, "identical core caption → identical signature regardless of promo tags → repost deduped");
 });
 
 test("YouTube-style titles are unaffected by the body/tail split (no hashtag tail present)", () => {

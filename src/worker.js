@@ -11,21 +11,7 @@ import { fetchIndex, probeFrame } from "./lib/radar.js";
 import { scanFrame, scanCoverage } from "./lib/scan.js";
 import { GRID, ECHO_ALPHA, MIN_CLUSTER_PX } from "../public/lib/radar-geo.js";
 import { extractReport, reportSignature, verifyReport, classifyItem, buildRows } from "./lib/community.js";
-import { PULL_CONNECTORS, YT_CHANNELS, canonicalChannelUrl, igProbe, igToken } from "./lib/connectors.js";
-
-// TEMPORARY source-review diagnostic (removed after candidate accounts are evaluated). Tests Business Discovery
-// accessibility for a FIXED candidate list — never from request input. POST + same-origin only; token never exposed.
-const IG_PROBE_CANDIDATES = ["storm_ae", "uaeweatherman", "alqasmyi", "storm.center"];
-const PROBE_SEC = { "cache-control": "no-store", "referrer-policy": "no-referrer", "x-frame-options": "DENY" };
-async function handleIgProbe(req, env) {
-  if (req.method !== "POST") return json({ ok: false, error: "POST only" }, 405, PROBE_SEC);
-  const origin = req.headers.get("origin"), expected = new URL(req.url).origin;
-  if (origin && origin !== expected) return json({ ok: false, error: "cross-origin not allowed" }, 403, PROBE_SEC);
-  const token = await igToken(env);
-  if (!token) return json({ ok: false, error: "no IG token bound" }, 503, PROBE_SEC);
-  const r = await igProbe({ token, fetchImpl: fetch, usernames: IG_PROBE_CANDIDATES, stub: logStub(env) });
-  return json(r, 200, PROBE_SEC);
-}
+import { PULL_CONNECTORS, YT_CHANNELS, canonicalChannelUrl } from "./lib/connectors.js";
 
 export { ValidationLog };
 
@@ -161,17 +147,48 @@ async function runConnectors(env, stub, errors) {
     try {
       const items = await c.fetchItems({ fetch, env, stub });
       let accepted = 0, skipped = 0; const rows = [];
+      // Per-source diagnostics: tally each account's classification outcome (accepted UAE reports, rejected foreign
+      // posts, ambiguous/unlocatable, other rejects) keyed by the item's own channelUser, so a multi-account connector
+      // reports each account separately. The fetch-level counts + last error come from the connector's own _sources.
+      const diag = {};
+      const bump = (u, k) => { const d = diag[u] || (diag[u] = { accepted: 0, rejectedForeign: 0, ambiguousLocation: 0, rejectedOther: 0 }); d[k]++; };
       for (const it of items) {
+        const u = it.channelUser || c.channelUser || "(default)";
         const cls = classifyItem(it.title);
-        if (!cls.accept) { skipped++; continue; }
+        if (!cls.accept) {
+          skipped++;
+          if (cls.reason === "non_uae") bump(u, "rejectedForeign");
+          else if (cls.reason === "no_uae_location" || cls.reason === "location_spam") bump(u, "ambiguousLocation");
+          else bump(u, "rejectedOther");
+          continue;
+        }
         // publication time (it.publishedMs) and observation time are kept distinct: YouTube/IG state no clock-time,
         // so observedMs stays null; only publish time is recorded. channel/url come from the item (multi-channel).
         rows.push(...buildRows({ source: c.source, extId: it.extId, channel: it.channel || c.channel, channelUser: it.channelUser || c.channelUser, url: it.url, title: it.title, publishedMs: it.publishedMs, observedMs: null }));
-        accepted++;
+        accepted++; bump(u, "accepted");
       }
       const res = rows.length ? await stub.saveReports(rows) : { saved: 0 };
       const newest = items.reduce((m, it) => Math.max(m, it.publishedMs), prev.newestItemMs || 0);
-      await stub.setConnState(c.id, { lastPollMs: Date.now(), ok: true, enabled: true, via: c._via || prev.via || null, channels: c.source === "youtube" ? YT_CHANNELS.length : undefined, items: items.length, newestItemMs: newest, lastExtId: items[0]?.extId || prev.lastExtId || null, accepted: (prev.accepted || 0) + accepted, skipped: (prev.skipped || 0) + skipped, saved: (prev.saved || 0) + (res.saved || 0), lastError: null });
+      // Merge fetch-level per-account info (items fetched, last successful collection, errors) with the classification
+      // tallies, and accumulate the accepted/rejected counts across polls so health shows each source's running totals.
+      const fetchSrc = c._sources || {};
+      const prevSrc = prev.sources || {};
+      const sources = {};
+      for (const u of new Set([...Object.keys(fetchSrc), ...Object.keys(diag), ...Object.keys(prevSrc)])) {
+        const fs = fetchSrc[u] || {}, ps = prevSrc[u] || {}, dg = diag[u] || {};
+        sources[u] = {
+          label: fs.label || ps.label || null,
+          itemsFetched: fs.fetched != null ? fs.fetched : (ps.itemsFetched || 0),
+          recentInWindow: fs.recent != null ? fs.recent : (ps.recentInWindow || 0),
+          accepted: (ps.accepted || 0) + (dg.accepted || 0),
+          rejectedForeign: (ps.rejectedForeign || 0) + (dg.rejectedForeign || 0),
+          ambiguousLocation: (ps.ambiguousLocation || 0) + (dg.ambiguousLocation || 0),
+          rejectedOther: (ps.rejectedOther || 0) + (dg.rejectedOther || 0),
+          lastSuccessMs: fs.lastOkMs || ps.lastSuccessMs || null,
+          lastError: fs.lastError !== undefined ? fs.lastError : (ps.lastError || null),
+        };
+      }
+      await stub.setConnState(c.id, { lastPollMs: Date.now(), ok: true, enabled: true, via: c._via || prev.via || null, channels: c.source === "youtube" ? YT_CHANNELS.length : undefined, items: items.length, newestItemMs: newest, lastExtId: items[0]?.extId || prev.lastExtId || null, accepted: (prev.accepted || 0) + accepted, skipped: (prev.skipped || 0) + skipped, saved: (prev.saved || 0) + (res.saved || 0), sources, lastError: null });
     } catch (e) {
       await stub.setConnState(c.id, { ...prev, lastPollMs: Date.now(), ok: false, lastError: String(e.message || e).slice(0, 140) });
       errors.push(`connector ${c.id}: ${String(e.message || e).slice(0, 80)}`);
@@ -461,7 +478,6 @@ export default {
       const days = Math.min(Math.max(parseInt(u.searchParams.get("days") || "30", 10) || 30, 1), 90);
       return json(await logStub(env).summary(days), 200, { "cache-control": "public, max-age=300" });
     }
-    if (u.pathname === "/api/ig-probe") return handleIgProbe(req, env);   // TEMP source-review diagnostic; removed after use
     if (u.pathname === "/api/scan") return handleScan(env);
     if (u.pathname === "/api/health") {
       const stub = logStub(env);
@@ -471,7 +487,7 @@ export default {
       const connectors = await stub.connStates(PULL_CONNECTORS.map((c) => c.id));
       // Audit of the one-time false-positive cleanup (counts only; no private data).
       const maint = igCleanup ? { igPromoCleanup: { at: igCleanup.at, postsScanned: igCleanup.postsScanned, postsQuarantined: igCleanup.postsQuarantined, postsKept: igCleanup.postsKept, rowsQuarantined: igCleanup.rowsQuarantined, rowsPreserved: igCleanup.rowsPreserved } } : null;
-      return json({ now: Date.now(), build: "2026-11-13-ig-promo-fix", ...h, telegram: tgStatus, connectors, maint }, 200, { "cache-control": "no-store" });
+      return json({ now: Date.now(), build: "2026-11-14-ig-sources", ...h, telegram: tgStatus, connectors, maint }, 200, { "cache-control": "no-store" });
     }
     if (u.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);

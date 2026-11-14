@@ -156,9 +156,9 @@ const OLD = ["ارشيف", "أرشيف", "العام الماضي", "قبل سن
 const UAE_MARK = ["الامارات", "uae", "emirates"];
 const hasAny = (arr, na, en) => arr.some((w) => (/[؀-ۿ]/.test(w) ? na.includes(normAr(w)) : en.includes(w)));
 
-// A single real observation names a handful of areas; a post that resolves to this many distinct places is almost
-// always a promotional hashtag dump (every Gulf city tagged for reach), so it is treated as location-unverified.
-const SPAM_PLACE_CAP = 5;
+// Upper sanity bound: a single genuine observation — even a widespread one — names at most the seven emirates plus a
+// few areas. Beyond this many distinct PLAIN-TEXT places, the caption is a dump, not one event, so it is not pinned.
+const MAX_PLACES = 8;
 
 // Isolate the weather-event BODY from the promotional/hashtag tail. Instagram captions put the real text first, then a
 // run of "dot-only" lines, then a block tagging every Gulf country/city for reach. Those trailing tags are NOT locations
@@ -175,14 +175,44 @@ export function eventBody(text) {
   return body || raw;   // never return empty — fall back to the whole text
 }
 
+// Each emirate's main city, used as a fallback pin when a caption names only the emirate (e.g. "rain in Abu Dhabi")
+// and no more-specific area. This is NOT the generic-emirate substitution the gazetteer cleanup removed: that replaced
+// SPECIFIC named places with a generic pin; here the emirate is the only location the caption gives.
+const EMIRATE_CAPITAL = { ad: "abu-dhabi", du: "dubai", sh: "sharjah", aj: "ajman", uq: "umm-al-quwain", rk: "ras-al-khaimah", fu: "fujairah" };
+
+// Decide the event's UAE location(s) from a caption. Promo tail is already removed by eventBody; here we prefer places
+// named in the PLAIN sentence text (hashtags stripped) so a genuine widespread event ("rain across Dubai, Sharjah,
+// Ajman and RAK") is kept in full, while a cluster of places that exist ONLY as hashtags is treated as non-locating.
+// Returns { places, kind }: "plain" (specific places in the sentence), "emirate" (only emirate(s) named → their main
+// cities), "single_tag" (exactly one hashtag place — e.g. "rain on #Dubai"), "tag_cluster" (2+ places only as hashtags
+// → promotional, no pins), or "none".
+export function locatePlaces(text) {
+  const body = eventBody(text || "");
+  const plain = extractReport(body.replace(/#[^\s#]+/g, " "));     // places in the plain sentence (tags removed)
+  if (plain.places.length) return { places: plain.places, emirates: plain.emirates, kind: "plain" };
+  // No specific sub-place, but the sentence names emirate(s) as the location (incl. an "in <emirate>" qualifier) ->
+  // pin each emirate's main city. This is the only location given, so it is a real report.
+  if (plain.emirates.length) {
+    const seen = new Set();
+    const caps = plain.emirates.map((em) => EMIRATE_CAPITAL[em]).filter((id) => id && !seen.has(id) && seen.add(id))
+      .map((id) => PLACES.find((p) => p.id === id)).filter(Boolean);
+    if (caps.length) return { places: caps, emirates: plain.emirates, kind: "emirate" };
+  }
+  const full = extractReport(body);                                // nothing plain — consider hashtag-named places
+  if (full.places.length === 1) return { places: full.places, emirates: full.emirates, kind: "single_tag" };
+  return { places: [], emirates: full.emirates, kind: full.places.length >= 2 ? "tag_cluster" : "none" };
+}
+
 export function classifyItem(title) {
   const raw = title || "";
   const body = eventBody(raw);
   const en = " " + normEn(body) + " ", na = " " + normAr(body) + " ";
-  const parsed = extractReport(body);                       // locations/events from the event body only — tags excluded
-  // "UAE-relevant" means a UAE place/emirate is named in the body, or the body carries an explicit UAE marker —
-  // NOT merely that "#الامارات" appears in a promo tag block (that tail is already stripped from `body`).
-  const uaeInBody = parsed.places.length > 0 || parsed.emirates.length > 0
+  const ev = extractReport(body);                           // events (and emirate context) from the event body
+  const loc = locatePlaces(raw);                            // the event's UAE place(s), promo tags excluded
+  const parsed = { ...ev, places: loc.places, hasLocation: loc.places.length > 0 };
+  // "UAE-relevant" = a UAE place/emirate is named in the body, or the body carries an explicit UAE marker — NOT merely
+  // that "#الامارات" sits in a promo tag block (that tail is already stripped from `body`).
+  const uaeInBody = loc.places.length > 0 || ev.emirates.length > 0
     || UAE_MARK.some((w) => (/[؀-ۿ]/.test(w) ? na.includes(normAr(w)) : en.includes(w)));
   // Foreign event: a non-UAE country drives the body and no UAE location is present -> not a UAE report. A post that
   // genuinely names a UAE place (even alongside a foreign one) is kept, and only its UAE place(s) are pinned.
@@ -190,25 +220,29 @@ export function classifyItem(title) {
   if (hasAny(FORECAST, na, en)) return { accept: false, reason: "forecast", parsed };
   if (hasAny(PROMO, na, en)) return { accept: false, reason: "promo", parsed };
   if (hasAny(OLD, na, en)) return { accept: false, reason: "old", parsed };
-  if (!parsed.hasLocation) return { accept: false, reason: "no_uae_location", parsed };   // location-unverified, no pins
-  // Safeguard: never turn a cluster of place names (a hashtag block that slipped through) into many map pins.
-  const distinct = parsed.places.length + parsed.emirates.filter((em) => !parsed.places.some((p) => p.em === em)).length;
-  if (distinct >= SPAM_PLACE_CAP) return { accept: false, reason: "location_spam", parsed };
-  if (parsed.event === "unknown") return { accept: false, reason: "no_observable_event", parsed };
-  return { accept: true, reason: "ok", parsed };
+  // Safeguard: places that appear ONLY inside a hashtag cluster are promotional, never a located observation.
+  if (loc.kind === "tag_cluster") return { accept: false, reason: "location_spam", parsed };
+  if (loc.places.length === 0) return { accept: false, reason: "no_uae_location", parsed };   // location-unverified, no pins
+  if (loc.places.length > MAX_PLACES) return { accept: false, reason: "location_spam", parsed };  // implausible dump
+  if (ev.event === "unknown") return { accept: false, reason: "no_observable_event", parsed };
+  return { accept: true, reason: "ok", parsed };            // a genuine widespread event keeps ALL its plain-text pins
 }
 
 // Build one report row per matched UAE place from a connector item. observedMs stays null unless the source
 // supplies a precise observation time (YouTube titles carry a date only, so publication time is authoritative).
+// The dedupe signature is computed on the hashtag-stripped body, so the SAME video reposted by different accounts
+// (each with its own promo tags) collapses to one signature and the repost is flagged as a duplicate.
 export function buildRows(opts) {
   const { source, extId, channel, channelUser = null, url = null, title, publishedMs, observedMs = null } = opts;
-  const parsed = extractReport(eventBody(title || ""));      // body only, so promo-tag place names never become pins
-  return parsed.places.map((place) => ({
+  const body = eventBody(title || "");
+  const ev = extractReport(body);
+  const loc = locatePlaces(title || "");                    // plain-text places only — promo tags never become pins
+  return loc.places.map((place) => ({
     id: `${source}:${extId}:${place.id}`,
     source, channel, channelUser, msgId: null,
-    text: (title || "").slice(0, 1000), lang: parsed.lang, event: parsed.event, events: parsed.events,
+    text: (title || "").slice(0, 1000), lang: ev.lang, event: ev.event, events: ev.events,
     placeId: place.id, placeName: place.en, em: place.em, lat: place.lat, lon: place.lon,
     publishMs: publishedMs, observedMs, forwarded: false, forwardMs: null, url,
-    sig: reportSignature(title || "", place.id), hasLocation: true,
+    sig: reportSignature(body, place.id), hasLocation: true,
   }));
 }

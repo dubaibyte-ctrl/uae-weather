@@ -19,12 +19,19 @@ test("canonicalChannelUrl is platform-aware and never fabricates a Telegram link
   assert.equal(canonicalChannelUrl("telegram", null), null);                                                // private channel: no public URL
 });
 
-test("source registries carry explicit platform metadata; Instagram targets the verified @storm.center (not @storm_ae)", () => {
+test("source registries carry explicit platform metadata; Instagram holds the Business-Discovery-verified accounts", () => {
   assert.equal(YT_CHANNELS[0].platform, "youtube");
   assert.equal(YT_CHANNELS[0].channelId, "UCGLpsE0Q0m0-_jigv37CTrw");
   assert.equal(YT_CHANNELS[0].canonicalUrl, "https://www.youtube.com/channel/UCGLpsE0Q0m0-_jigv37CTrw");
-  assert.equal(IG_USERNAMES[0].platform, "instagram");
-  assert.equal(IG_USERNAMES[0].user, "storm.center");          // @storm_ae is the YouTube handle, a distinct source
+  // Every Instagram source is a public Business/Creator account proven reachable by the 2026-11-14 probe.
+  const users = IG_USERNAMES.map((a) => a.user);
+  assert.deepEqual(users, ["storm_ae", "uaeweatherman", "storm.center"]);
+  assert.ok(!users.includes("alqasmyi"), "alqasmyi failed Business Discovery (Graph #110) and must not be configured");
+  for (const a of IG_USERNAMES) {
+    assert.equal(a.platform, "instagram");
+    assert.equal(a.canonicalUrl, `https://www.instagram.com/${a.user}/`);
+    assert.ok(a.label && a.displayName, "each source carries an explicit display label");
+  }
   assert.equal(instagramStormCentre.id, "instagram:storm.center");
 });
 
@@ -96,10 +103,15 @@ test("instagram connector fetchItems calls Business Discovery and normalizes med
     return { json: async () => ({ error: { code: 100, message: "bad" } }) };
   };
   const items = await instagramStormCentre.fetchItems({ fetch: f, env: { IG_ACCESS_TOKEN: "tok" }, stub });
-  assert.equal(items.length, 1);
-  assert.equal(items[0].extId, "ig_m9");
+  assert.equal(items.length, IG_USERNAMES.length);           // one media item per configured account (mock returns the same)
+  assert.ok(items.every((it) => it.extId === "ig_m9"));
   assert.equal(stub._c["ig:userId"], "17841000");            // resolved + cached (an id, not a credential)
   assert.equal(classifyItem(items[0].title).accept, true);   // Masafi + rain accepted
+  // per-account fetch diagnostics are recorded for every configured source
+  for (const a of IG_USERNAMES) {
+    assert.ok(instagramStormCentre._sources[a.user], `diagnostics recorded for @${a.user}`);
+    assert.equal(instagramStormCentre._sources[a.user].lastError, null);
+  }
 });
 
 // ---- YouTube Data API path (replaces unreliable RSS); same extId so existing reports are preserved ----
