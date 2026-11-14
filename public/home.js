@@ -5,12 +5,12 @@
    keep rendering into their own containers (now living inside the Map/More views); Home reads their state (S, R, C). */
 Object.assign(I18N.en, {
   tab_home: "Home", tab_map: "Map", tab_alerts: "Alerts", tab_more: "More",
-  hs_rain: "Rain detected now", hs_none: "No rain detected in covered areas", hs_unavail: "Weather data unavailable or insufficient",
+  hs_rain: "Rain reported now", hs_echo: "Possible rain on radar", hs_echo_sub: "Radar shows echoes near these areas — not confirmed on the ground.", hs_echo_also: "Radar echoes also near: {0}", hs_none: "No rain detected in covered areas", hs_unavail: "Weather data unavailable or insufficient",
   hs_partial: "No rain where we can currently see",
   hs_areas: "Areas: {0}", hs_none_sub: "Radar and airport reports are current and show no rain where coverage reaches. This is not a claim that the whole UAE is dry.",
   hs_unavail_sub: "Radar or airport data is missing or stale right now, so no reliable rain status can be given.",
   hs_partial_sub: "Some sources are unavailable, so we can't confirm the whole covered area.",
-  hs_rain_sub: "Live signals of rain. Each is a separate kind of evidence — tap through for detail and verification.",
+  hs_rain_sub: "Airport weather reports show rain here. Tap through for detail and verification.",
   hs_reliab: "Radar: {0} · Airports: {1}", hs_radar_na: "unavailable", hs_metar_na: "unavailable",
   home_wheres: "Where's the rain?", home_wheres_none: "No radar echoes near listed places right now.",
   home_nearme: "Rain near me", home_nearme_cta: "📍 Check near my location", home_nearme_none: "No radar echo within {0} km of you.",
@@ -21,12 +21,12 @@ Object.assign(I18N.en, {
 });
 Object.assign(I18N.ar, {
   tab_home: "الرئيسية", tab_map: "الخريطة", tab_alerts: "التنبيهات", tab_more: "المزيد",
-  hs_rain: "أمطار مرصودة الآن", hs_none: "لا أمطار في المناطق المغطاة", hs_unavail: "بيانات الطقس غير متاحة أو غير كافية",
+  hs_rain: "أمطار مُبلَّغ عنها الآن", hs_echo: "مطر محتمل على الرادار", hs_echo_sub: "يُظهر الرادار أصداء قرب هذه المناطق — غير مؤكدة على الأرض.", hs_echo_also: "أصداء رادار أيضًا قرب: {0}", hs_none: "لا أمطار في المناطق المغطاة", hs_unavail: "بيانات الطقس غير متاحة أو غير كافية",
   hs_partial: "لا مطر حيث نرى حاليًا",
   hs_areas: "المناطق: {0}", hs_none_sub: "الرادار وتقارير المطارات حديثة ولا تُظهر مطرًا حيث تصل التغطية. هذا ليس ادعاءً بأن كل الإمارات جافة.",
   hs_unavail_sub: "بيانات الرادار أو المطارات مفقودة أو قديمة الآن، لذا لا يمكن إعطاء حالة مطر موثوقة.",
   hs_partial_sub: "بعض المصادر غير متاحة، لذا لا يمكننا تأكيد كامل المنطقة المغطاة.",
-  hs_rain_sub: "إشارات مباشرة للمطر. كل منها نوع مختلف من الأدلة — اضغط للتفاصيل والتحقق.",
+  hs_rain_sub: "تقارير طقس المطارات تُظهر مطرًا هنا. اضغط للتفاصيل والتحقق.",
   hs_reliab: "الرادار: {0} · المطارات: {1}", hs_radar_na: "غير متاح", hs_metar_na: "غير متاحة",
   home_wheres: "أين المطر؟", home_wheres_none: "لا أصداء رادار قرب الأماكن المدرجة الآن.",
   home_nearme: "المطر قربي", home_nearme_cta: "📍 تحقّق قرب موقعي", home_nearme_none: "لا صدى رادار ضمن {0} كم منك.",
@@ -36,7 +36,9 @@ Object.assign(I18N.ar, {
   more_adv: "تشخيصات متقدمة (METAR، مسح الرادار، صحة المجمّع، المصادر)",
 });
 
-const STATION_CITY = { OMDB: "Dubai", OMDW: "Al Maktoum", OMSJ: "Sharjah", OMRK: "RAK", OMFJ: "Fujairah", OMAA: "Abu Dhabi", OMAD: "Abu Dhabi", OMAM: "Al Dhafra", OMAL: "Al Ain" };
+const STATION_CITY_L = { OMDB: ["Dubai", "دبي"], OMDW: ["Al Maktoum (Dubai South)", "مكتوم (دبي الجنوب)"], OMSJ: ["Sharjah", "الشارقة"], OMRK: ["Ras Al Khaimah", "رأس الخيمة"], OMFJ: ["Fujairah", "الفجيرة"],
+  OMAA: ["Abu Dhabi", "أبوظبي"], OMAD: ["Abu Dhabi (Al Bateen)", "أبوظبي (البطين)"], OMAM: ["Al Dhafra", "الظفرة"], OMAL: ["Al Ain", "العين"] };
+const STATION_CITY = new Proxy({}, { get: (_, id) => { const c = STATION_CITY_L[id]; return c ? c[lang === "ar" ? 1 : 0] : undefined; } });
 // Plain duration (no "ago"), for latency: "8 min" / "1 h 5 min".
 const durTxt = (ms) => { const m = Math.max(0, Math.round(ms / 60000)); return m < 60 ? m + " " + t("min") : Math.floor(m / 60) + " " + t("h") + " " + (m % 60) + " " + t("min"); };
 const H = { tab: ls("tab") || "home" };
@@ -68,28 +70,34 @@ function renderTabbar() {
 
 /* ---------------- Home: main rain status ---------------- */
 function homeStatus() {
+  // Airport-observed rain (METAR present weather) — an actual observation.
   const obsRain = [];
   if (typeof S!=="undefined" && S.metar) Object.values(S.metar.latest).forEach((r) => {
     if (typeof metarState === "function" && metarState(r).k === "bad") return;
     if (r.wxp && r.wxp.at && r.wxp.at.length) { const c = STATION_CITY[r.icaoId] || r.icaoId; if (!obsRain.includes(c)) obsRain.push(c); }
   });
-  const echoes = ((typeof R!=="undefined" && R.analysed) || []).filter((x) => x.a.status === "over" || x.a.status === "near").sort((a, b) => (a.a.nearestKm ?? 999) - (b.a.nearestKm ?? 999));
-  const echoNames = echoes.slice(0, 6).map((x) => rname(x.p));
+  // Radar echoes from BOTH sources: the server-side whole-UAE scan (R) and the app's own probes of the latest radar frame
+  // at each listed city (S.probes). Either alone keeps working if the other is down, so the banner always matches the map.
+  const scanEchoes = ((typeof R!=="undefined" && R.analysed) || []).filter((x) => x.a.status === "over" || x.a.status === "near").sort((a, b) => (a.a.nearestKm ?? 999) - (b.a.nearestKm ?? 999)).map((x) => rname(x.p));
+  const rs = radarState(), clientRadarOk = rs.k !== "bad" && typeof S!=="undefined" && Object.values(S.probes || {}).some((v) => v.state === "echo" || v.state === "none");
+  const probeEchoes = clientRadarOk ? Object.entries(S.probes).filter(([, v]) => v.state === "echo").map(([id]) => { const p = byId(id); return p ? pname(p) : id; }) : [];
+  const echoNames = [...new Set([...scanEchoes, ...probeEchoes])].filter((n) => !obsRain.includes(n)).slice(0, 6);
   const comm = ((typeof C!=="undefined" && C.data && C.data.groups) || []).filter((g) => g.place).slice(0, 6).map((g) => g.place.name);
-  const rk = typeof radarK === "function" ? radarK() : (radarState().k === "fresh" ? "fresh" : radarState().k);
-  const radarUsable = rk !== "bad" && ((typeof R!=="undefined" && R.analysed) || []).some((x) => x.a.status !== "unavailable");
+  const scanOk = (typeof radarK === "function" ? radarK() : "bad") !== "bad" && ((typeof R!=="undefined" && R.analysed) || []).some((x) => x.a.status !== "unavailable");
+  const radarUsable = scanOk || clientRadarOk;
   const metarUsable = !!(typeof S!=="undefined" && S.metar);
-  const areas = [...new Set([...obsRain, ...echoNames])];
   let level;
-  if (obsRain.length || echoes.length) level = "rain";
+  if (obsRain.length) level = "rain";                 // observed at an airport
+  else if (echoNames.length) level = "echo";          // radar only: possible, never stated as confirmed rain
   else if (!radarUsable && !metarUsable) level = "unavail";
   else if (radarUsable && metarUsable) level = "none";
   else level = "partial";
-  return { level, areas, comm, rk, metarUsable, radarUsable };
+  return { level, areas: level === "rain" ? obsRain : echoNames, echoNames, comm, metarUsable, radarUsable };
 }
 function reliabLine(s) {
+  // Radar availability = the radar frames themselves (RainViewer), independent of our server-side scan.
   const rs = radarState();
-  const radarTxt = s.radarUsable ? (R && R.frame ? fmtT(R.frame.ms) + " · " + ageTxt(ageMin(R.frame.ms)) : rs.txt) : t("hs_radar_na");
+  const radarTxt = typeof R!=="undefined" && R.frame && s.radarUsable ? fmtT(R.frame.ms) + " · " + ageTxt(ageMin(R.frame.ms)) : rs.k !== "bad" ? rs.txt : t("hs_radar_na");
   let metarTxt = t("hs_metar_na");
   if (typeof S!=="undefined" && S.metar) { const nw = Math.max(...Object.values(S.metar.latest).map((r) => r.ms)); metarTxt = fmtT(nw) + " · " + ageTxt(ageMin(nw)); }
   return t("hs_reliab", radarTxt, metarTxt);
@@ -98,11 +106,13 @@ function renderStatus() {
   const box = document.getElementById("rainStatus"); if (!box) return;
   const s = homeStatus();
   box.className = "card status " + s.level;
-  const head = { rain: "hs_rain", none: "hs_none", unavail: "hs_unavail", partial: "hs_partial" }[s.level];
-  const sub = { rain: "hs_rain_sub", none: "hs_none_sub", unavail: "hs_unavail_sub", partial: "hs_partial_sub" }[s.level];
-  const icon = { rain: "🌧", none: "✓", unavail: "⚠", partial: "•" }[s.level];
+  const head = { rain: "hs_rain", echo: "hs_echo", none: "hs_none", unavail: "hs_unavail", partial: "hs_partial" }[s.level];
+  const sub = { rain: "hs_rain_sub", echo: "hs_echo_sub", none: "hs_none_sub", unavail: "hs_unavail_sub", partial: "hs_partial_sub" }[s.level];
+  const icon = { rain: "🌧", echo: "📡", none: "✓", unavail: "⚠", partial: "•" }[s.level];
   let h = `<div class="statline"><span class="sicon">${icon}</span><span class="stext">${t(head)}</span></div>`;
-  if (s.level === "rain" && s.areas.length) h += `<div class="sareas">${esc(s.areas.slice(0, 8).join("، ") || s.areas.join(", "))}</div>`;
+  const sep = lang === "ar" ? "، " : ", ";
+  if ((s.level === "rain" || s.level === "echo") && s.areas.length) h += `<div class="sareas">${esc(s.areas.slice(0, 8).join(sep))}</div>`;
+  if (s.level === "rain" && s.echoNames.length) h += `<div class="muted sm">${esc(t("hs_echo_also", s.echoNames.join(sep)))}</div>`;
   h += `<div class="muted sm">${t(sub)}</div>`;
   h += `<div class="muted sm reliab">${reliabLine(s)}</div>`;
   box.innerHTML = h;

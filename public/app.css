@@ -86,6 +86,8 @@ body{padding-bottom:calc(64px + env(safe-area-inset-bottom))}
 .status .reliab{margin-top:6px}
 .status.rain{border-inline-start-color:var(--obs);background:color-mix(in srgb,var(--obs) 7%,var(--card))}
 .status.rain .sicon,.status.rain .stext{color:var(--obs)}
+.status.echo{border-inline-start-color:var(--rad);background:color-mix(in srgb,var(--rad) 7%,var(--card))}
+.status.echo .sicon,.status.echo .stext{color:var(--rad)}
 .status.none{border-inline-start-color:var(--none)}
 .status.none .stext{color:var(--none)}
 .status.unavail{border-inline-start-color:var(--bad);background:color-mix(in srgb,var(--bad) 6%,var(--card))}
