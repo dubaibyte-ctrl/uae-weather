@@ -14,7 +14,7 @@ import { extractReport, reportSignature, verifyReport, classifyItem, buildRows }
 import { PULL_CONNECTORS, YT_CHANNELS, canonicalChannelUrl } from "./lib/connectors.js";
 import { PLACES } from "./lib/places-data.js";
 import { generateVapidKeys, sendWebPush } from "./lib/webpush.js";
-import { communityEvents, radarEvents, planSends, sanitizeSubscription, pushAllowance, countingFetch } from "./lib/notify.js";
+import { communityEvents, radarEvents, planSends, sanitizeSubscription, countingFetch, countingStub, runPushPass } from "./lib/notify.js";
 import { VAPID_SUBJECT } from "./log.js";
 
 export { ValidationLog };
@@ -41,9 +41,11 @@ async function handleMetar(req, ctx) {
 }
 
 async function collect(env) {
-  const stub = logStub(env);
+  // Subrequests this run: `used` = outbound (free plan 50 per invocation, every redirect hop counted), `internal` = calls
+  // to the Durable Object (counted against the 1,000 internal limit). Pushes get only what is left.
+  const budget = { used: 0, internal: 0 }, cf = countingFetch(budget);
+  const stub = countingStub(logStub(env), budget);
   const errors = [], at = Date.now();
-  const budget = { used: 0 }, cf = countingFetch(budget);   // outbound subrequests this run (free plan: 50 per invocation)
   let metars = [], radar = [];
   try { metars = (await fetchMetars(undefined, undefined, cf)).norm; } catch (e) { errors.push("metar: " + (e.message || e)); }
   try {
@@ -559,31 +561,25 @@ async function handlePush(req, env, u) {
 
 // Cron: announce NEW, FRESH events to the devices that follow those areas. Radar from the newest fresh scan frame;
 // community from the same grouped/verified reports the app shows. Dedupe + cooldown + caps live in notify.planSends.
-async function sendPushes(env, stub, errors, budget = { used: 0 }, f = fetch) {
+async function sendPushes(env, stub, errors, budget = { used: 0, internal: 0 }, f = fetch) {
   const subs = await stub.pushList(); if (!subs.length) return;
   const vapid = await stub.cfgGet("push:vapid"); if (!vapid) return;
   const now = Date.now();
   const { groups, scan } = await buildCommunity(stub, 1);
   const frame = scan.frames && scan.frames[0];
   const followed = [...new Map(subs.flatMap((s) => s.places).map((p) => [p.id, p])).values()];
+  // Events are re-derived from stored data on every run and re-checked for freshness, so anything not sent this run
+  // (deferred by the budget, or a failed send) is retried next run only if it is still fresh; otherwise it is dropped.
   const events = [...communityEvents(groups, now), ...radarEvents(frame, followed, (lat, lon) => analysePoint(lat, lon, frame, null), now)];
-  let ok = 0, fail = 0, planned = 0, deferred = 0;
-  if (events.length) {
-    const ledger = { wasSent: (s, k) => stub.pushWasSent(s, k), lastSentPrefix: (s, p) => stub.pushLastSentPrefix(s, p), sentSince: (s, t) => stub.pushSentSince(s, t) };
-    const all = await planSends(subs, events, ledger, now); planned = all.length;
-    // Never let pushes take this run past the subrequest limit: the rest stay unmarked in the ledger and go next run.
-    const plan = all.slice(0, pushAllowance(budget.used)); deferred = all.length - plan.length;
-    for (const p of plan) {
-      try {
-        // radar signals go stale fast (30 min TTL); community reports stay relevant a little longer (2 h)
-        const r = await sendWebPush(p.sub, p.message, { ...vapid, subject: VAPID_SUBJECT }, f, p.message.cat === "radar" ? 1800 : 7200, "high");
-        await stub.pushResult(p.sub.endpoint, r);
-        if (r.ok) { await stub.pushMarkSent(p.subKey, p.eventKey); ok++; } else fail++;   // failed sends retry next run
-      } catch (e) { fail++; errors.push("push: " + String(e.message || e).slice(0, 80)); }
-    }
-  }
+  const res = await runPushPass({
+    subs, events, budget, now,
+    ledgerRows: events.length ? await stub.pushLedgerRows(now - 86400e3) : [],      // one read for the whole run
+    send: (sub, message, ttl) => sendWebPush(sub, message, { ...vapid, subject: VAPID_SUBJECT }, f, ttl, "high"),
+    record: async (sub, sk, key, r) => { await stub.pushResult(sub.endpoint, r); if (r.ok) await stub.pushMarkSent(sk, key); },
+  });
+  for (const e of res.errors) errors.push("push: " + e);
   await stub.pushPruneSent(now - 7 * 86400e3);
-  await stub.cfgSet("push:lastRun", { at: now, subs: subs.length, events: events.length, planned, deferred, ok, fail, subrequests: budget.used });
+  await stub.cfgSet("push:lastRun", { at: now, subs: subs.length, events: events.length, planned: res.planned, deferred: res.deferred, expired: res.expired, ok: res.ok, fail: res.fail, subrequests: budget.used, internal: budget.internal + 1 });
 }
 
 export default {

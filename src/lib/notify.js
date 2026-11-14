@@ -15,11 +15,58 @@ export const RADAR_COOLDOWN_MS = 3 * 3600e3;     // at most one radar alert per 
 export const MATCH_KM = 10;                      // a report within 10 km of a followed place counts for that place
 export const MAX_PER_HOUR = 4, MAX_PER_DAY = 12; // per device, across categories — avoid notification fatigue
 export const MAX_SENDS_PER_RUN = 25;             // bound CPU per cron run (free plan)
-// Workers Free allows 50 outbound subrequests per invocation (cron included); each push is one. The collector counts its
-// own fetches, and pushes only use what is left minus a reserve for un-counted calls (Telegram webhook self-heal).
-export const SUBREQUEST_LIMIT = 50, SUBREQUEST_RESERVE = 4;
-export function pushAllowance(used) { return Math.max(0, Math.min(MAX_SENDS_PER_RUN, SUBREQUEST_LIMIT - SUBREQUEST_RESERVE - used)); }
-export function countingFetch(budget, f = fetch) { return (...a) => { budget.used++; return f(...a); }; }
+// Workers Free allows 50 outbound subrequests per invocation (cron included) and 1,000 to internal services. Each hop of
+// a redirect chain counts, so the collector follows redirects itself and counts every hop. Calls to the app's Durable
+// Object are counted as internal (conservative: the docs don't say whether they count). Pushes only use what is left.
+export const SUBREQUEST_LIMIT = 50, SUBREQUEST_RESERVE = 4, INTERNAL_LIMIT = 1000, INTERNAL_RESERVE = 50;
+export const PUSH_INTERNAL_PER_SEND = 2;          // pushResult + pushMarkSent
+export function pushAllowance(budget) {
+  const b = typeof budget === "number" ? { used: budget, internal: 0 } : budget;
+  const ext = SUBREQUEST_LIMIT - SUBREQUEST_RESERVE - (b.used || 0);
+  const int = Math.floor((INTERNAL_LIMIT - INTERNAL_RESERVE - (b.internal || 0)) / PUSH_INTERNAL_PER_SEND);
+  return Math.max(0, Math.min(MAX_SENDS_PER_RUN, ext, int));
+}
+const MAX_REDIRECTS = 5;
+export function countingFetch(budget, f = fetch) {
+  return async (input, init = {}) => {
+    let url = typeof input === "string" ? input : input.url, opts = { ...init, redirect: "manual" };
+    for (let hop = 0; ; hop++) {
+      budget.used++;
+      const r = await f(url, opts);
+      const loc = r && r.status >= 300 && r.status < 400 && r.headers && r.headers.get && r.headers.get("location");
+      if (!loc || init.redirect === "manual") return r;
+      if (hop >= MAX_REDIRECTS) throw new Error("too_many_redirects");
+      url = new URL(loc, url).toString();
+      if (r.status === 303 || ((r.status === 301 || r.status === 302) && opts.method && opts.method !== "GET" && opts.method !== "HEAD")) opts = { ...opts, method: "GET", body: undefined };
+    }
+  };
+}
+// Count every RPC to the Durable Object made during a cron run (each is one internal subrequest).
+export function countingStub(stub, budget) {
+  // Call as t[k](...a): Durable Object RPC stubs don't implement Function.prototype.apply. Leave `then` alone so the
+  // wrapper is never mistaken for a promise.
+  return new Proxy(stub, { get(t, k) { if (k === "then" || typeof k === "symbol" || typeof t[k] !== "function") return t[k]; return (...a) => { budget.internal = (budget.internal || 0) + 1; return t[k](...a); }; } });
+}
+// The whole push ledger a run needs, read once (one RPC) instead of one RPC per subscriber x event.
+export function ledgerFromRows(rows) {
+  const sent = new Set(), times = new Map();
+  for (const r of rows || []) { sent.add(r.sub_key + "\u0000" + r.event_key); if (!times.has(r.sub_key)) times.set(r.sub_key, []); times.get(r.sub_key).push([r.event_key, r.sent_ms]); }
+  return {
+    wasSent: (sk, key) => sent.has(sk + "\u0000" + key),
+    lastSentPrefix: (sk, prefix) => (times.get(sk) || []).reduce((m, [k, t]) => (k.startsWith(prefix) && t > m ? t : m), 0),
+    sentSince: (sk, since) => (times.get(sk) || []).filter(([, t]) => t > since).length,
+  };
+}
+// Fair order: start from a different subscriber each run so a tight budget can't starve the same devices every time.
+export function rotateSubs(subs, now = Date.now()) { if (!subs.length) return subs; const i = Math.floor(now / 600e3) % subs.length; return [...subs.slice(i), ...subs.slice(0, i)]; }
+// Push TTL = the time the event stays "fresh" (radar 20 min, community 2 h from its observation/frame time), so the push
+// service drops it rather than delivering it late. Returns 0 when there isn't enough freshness left to be worth sending.
+export const MIN_TTL_S = 120;
+export function pushTtl(message, now = Date.now()) {
+  const win = message.cat === "radar" ? RADAR_FRESH_MS : COMMUNITY_FRESH_MS;
+  const s = Math.floor((message.ts + win - now) / 1000);
+  return s >= MIN_TTL_S ? s : 0;
+}
 
 export function subKey(endpoint) { let h = 0x811c9dc5; const s = String(endpoint); for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); } return (h >>> 0).toString(36); }
 
@@ -126,6 +173,28 @@ export async function planSends(subs, events, ledger, now = Date.now()) {
     }
   }
   return sends;
+}
+
+// One cron run's push pass, independent of storage and network (the Worker passes the real ones in):
+//   ledgerRows: push_sent rows from the last 24 h; send(sub, message, ttl) -> {ok, gone}; record(sub, subKey, eventKey, r)
+//   persists the outcome (mark sent only when ok). Anything not sent stays unmarked and is re-planned next run from
+//   fresh data, so a deferred or failed alert is retried only while still fresh, and never twice once delivered.
+export async function runPushPass({ subs, events, ledgerRows, budget, now = Date.now(), clock = () => Date.now(), send, record }) {
+  const out = { planned: 0, deferred: 0, expired: 0, ok: 0, fail: 0, errors: [] };
+  if (!subs.length || !events.length) return out;
+  const all = await planSends(rotateSubs(subs, now), events, ledgerFromRows(ledgerRows), now);
+  out.planned = all.length;
+  const plan = all.slice(0, pushAllowance(budget)); out.deferred = all.length - plan.length;
+  for (const p of plan) {
+    const ttl = pushTtl(p.message, clock());
+    if (!ttl) { out.expired++; continue; }
+    try {
+      const r = await send(p.sub, p.message, ttl);
+      await record(p.sub, p.subKey, p.eventKey, r);
+      if (r.ok) out.ok++; else out.fail++;
+    } catch (e) { out.fail++; out.errors.push(String(e.message || e).slice(0, 80)); }
+  }
+  return out;
 }
 
 // Validate + normalise a subscription posted by the browser. Returns null if unusable. Keeps only what delivery needs.

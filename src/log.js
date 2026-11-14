@@ -70,7 +70,8 @@ export class ValidationLog extends DurableObject {
     if (ok) this.sql.exec("UPDATE push_subs SET last_ok_ms=?, fail_count=0 WHERE endpoint=?", Date.now(), endpoint);
     else {
       this.sql.exec("UPDATE push_subs SET fail_count=COALESCE(fail_count,0)+1 WHERE endpoint=?", endpoint);
-      this.sql.exec("DELETE FROM push_subs WHERE endpoint=? AND fail_count>=5", endpoint);
+      // Drop only after 5+ consecutive failures AND no delivery for 3 days, so a short push-service outage can't remove a phone.
+      this.sql.exec("DELETE FROM push_subs WHERE endpoint=? AND fail_count>=5 AND COALESCE(last_ok_ms, created_ms, 0) < ?", endpoint, Date.now() - 3 * 86400e3);
     }
     return { ok: true };
   }
@@ -78,6 +79,8 @@ export class ValidationLog extends DurableObject {
   pushMarkSent(subKey, eventKey) { this.sql.exec("INSERT OR IGNORE INTO push_sent VALUES(?,?,?)", subKey, eventKey, Date.now()); }
   pushLastSentPrefix(subKey, prefix) { const r = this.sql.exec("SELECT MAX(sent_ms) AS m FROM push_sent WHERE sub_key=? AND substr(event_key,1,?)=?", subKey, prefix.length, prefix).toArray()[0]; return (r && r.m) || 0; }
   pushSentSince(subKey, sinceMs) { return this.sql.exec("SELECT COUNT(*) AS n FROM push_sent WHERE sub_key=? AND sent_ms>?", subKey, sinceMs).toArray()[0].n; }
+  // Every ledger row a cron run can need (sent within the last 24 h), via the sent_ms index: one RPC per run.
+  pushLedgerRows(sinceMs) { return this.sql.exec("SELECT sub_key, event_key, sent_ms FROM push_sent WHERE sent_ms>?", sinceMs).toArray(); }
   pushPruneSent(olderThanMs) { this.sql.exec("DELETE FROM push_sent WHERE sent_ms<?", olderThanMs); }
   // VAPID keypair: created once and kept here (private key never leaves this object). Atomic set-if-absent so two first
   // requests can't race to different keys.
