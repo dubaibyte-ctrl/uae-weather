@@ -14,7 +14,7 @@ import { extractReport, reportSignature, verifyReport, classifyItem, buildRows }
 import { PULL_CONNECTORS, YT_CHANNELS, canonicalChannelUrl } from "./lib/connectors.js";
 import { PLACES } from "./lib/places-data.js";
 import { generateVapidKeys, sendWebPush } from "./lib/webpush.js";
-import { communityEvents, radarEvents, planSends, sanitizeSubscription } from "./lib/notify.js";
+import { communityEvents, radarEvents, planSends, sanitizeSubscription, pushAllowance, countingFetch } from "./lib/notify.js";
 import { VAPID_SUBJECT } from "./log.js";
 
 export { ValidationLog };
@@ -43,27 +43,28 @@ async function handleMetar(req, ctx) {
 async function collect(env) {
   const stub = logStub(env);
   const errors = [], at = Date.now();
+  const budget = { used: 0 }, cf = countingFetch(budget);   // outbound subrequests this run (free plan: 50 per invocation)
   let metars = [], radar = [];
-  try { metars = (await fetchMetars()).norm; } catch (e) { errors.push("metar: " + (e.message || e)); }
+  try { metars = (await fetchMetars(undefined, undefined, cf)).norm; } catch (e) { errors.push("metar: " + (e.message || e)); }
   try {
-    const { host, frames } = await fetchIndex();
+    const { host, frames } = await fetchIndex(cf);
     const known = new Set(await stub.knownFrames());
     const stationLL = Object.fromEntries(Object.entries(STATIONS).map(([id, s]) => [id, s.ll]));
     for (const fr of frames.slice(-3)) {
       if (known.has(fr.ms)) continue;
-      radar.push(...(await probeFrame(host, fr, stationLL)));
+      radar.push(...(await probeFrame(host, fr, stationLL, cf)));
     }
     const bad = radar.filter((r) => r.state !== "ok").length;
     if (bad) errors.push(`radar: ${bad} sample(s) not usable (e.g. ${radar.find((r) => r.state !== "ok").state})`);
   } catch (e) { errors.push("radar: " + (e.message || e)); }
   await stub.record({ metars, radar, errors, at });
-  try { await collectScan(stub, errors); } catch (e) { errors.push("scan: " + (e.message || e)); }
+  try { await collectScan(stub, errors, cf); } catch (e) { errors.push("scan: " + (e.message || e)); }
   try { await ensureWebhook(env, stub); } catch (e) { errors.push("telegram: " + (e.message || e)); } // self-heals the webhook once the token secret exists
-  try { await runConnectors(env, stub, errors); } catch (e) { errors.push("connectors: " + (e.message || e)); }
+  try { await runConnectors(env, stub, errors, cf); } catch (e) { errors.push("connectors: " + (e.message || e)); }
   try { await reparseCommunityOnce(stub); } catch (e) { errors.push("reparse: " + (e.message || e)); }
   try { await quarantineIgPromoOnce(stub); } catch (e) { errors.push("ig-cleanup: " + (e.message || e)); }
   try { await landmarkReparseOnce(stub); } catch (e) { errors.push("landmark-reparse: " + (e.message || e)); }
-  try { await sendPushes(env, stub, errors); } catch (e) { errors.push("push: " + (e.message || e)); }
+  try { await sendPushes(env, stub, errors, budget, cf); } catch (e) { errors.push("push: " + (e.message || e)); }
   try { await stub.pushFlushTests(); } catch (e) { errors.push("push-test: " + (e.message || e)); }   // backstop if an alarm was missed
   if (errors.length) await stub.noteErrors(at, errors);
 }
@@ -172,7 +173,7 @@ async function quarantineIgPromoOnce(stub) {
 
 // Run each pull connector in isolation: one failure is recorded in that connector's health and never affects the
 // others, Telegram, radar or METAR. Accepted items flow through the same parser / verifier / Community pipeline.
-async function runConnectors(env, stub, errors) {
+async function runConnectors(env, stub, errors, f = fetch) {
   for (const c of PULL_CONNECTORS) {
     const prev = (await stub.getConnState(c.id)) || {};
     // A connector that needs a credential it doesn't have (e.g. Instagram before authorization) stays inert.
@@ -181,7 +182,7 @@ async function runConnectors(env, stub, errors) {
       continue;
     }
     try {
-      const items = await c.fetchItems({ fetch, env, stub });
+      const items = await c.fetchItems({ fetch: f, env, stub });
       let accepted = 0, skipped = 0; const rows = [];
       // Per-source diagnostics: tally each account's classification outcome (accepted UAE reports, rejected foreign
       // posts, ambiguous/unlocatable, other rejects) keyed by the item's own channelUser, so a multi-account connector
@@ -235,19 +236,19 @@ async function runConnectors(env, stub, errors) {
 // Radar scan, kept light for the free plan's CPU limit: one heavy job per run. Coverage layer first (and daily after),
 // otherwise the newest frame not yet scanned. Older frames are not back-filled; the trend uses the frame ~20 min earlier,
 // which earlier runs already stored.
-async function collectScan(stub, errors) {
+async function collectScan(stub, errors, f = fetch) {
   const ca = await stub.coverageAge();
   if (!ca || ca.state !== "ok" || Date.now() - ca.savedMs > 24 * 3600e3) {
-    const cov = await scanCoverage();
+    const cov = await scanCoverage(f);
     if (cov.state !== "ok") errors.push("coverage: " + cov.errs.slice(0, 2).join(","));
     await stub.saveScan(null, cov);
     return;
   }
-  const { host, frames } = await fetchIndex();
+  const { host, frames } = await fetchIndex(f);
   const known = new Set(await stub.scanKnown());
   const fr = frames.slice().reverse().slice(0, 3).find((f) => !known.has(f.ms));
   if (!fr) return;
-  const r = await scanFrame(host, fr);
+  const r = await scanFrame(host, fr, f);
   if (r.errs.length) errors.push(`scan ${new Date(fr.ms).toISOString().slice(11, 16)}Z: ${r.errs.length} tile(s) unreadable (${r.errs[0]})`);
   await stub.saveScan(r, null);
 }
@@ -558,7 +559,7 @@ async function handlePush(req, env, u) {
 
 // Cron: announce NEW, FRESH events to the devices that follow those areas. Radar from the newest fresh scan frame;
 // community from the same grouped/verified reports the app shows. Dedupe + cooldown + caps live in notify.planSends.
-async function sendPushes(env, stub, errors) {
+async function sendPushes(env, stub, errors, budget = { used: 0 }, f = fetch) {
   const subs = await stub.pushList(); if (!subs.length) return;
   const vapid = await stub.cfgGet("push:vapid"); if (!vapid) return;
   const now = Date.now();
@@ -566,21 +567,23 @@ async function sendPushes(env, stub, errors) {
   const frame = scan.frames && scan.frames[0];
   const followed = [...new Map(subs.flatMap((s) => s.places).map((p) => [p.id, p])).values()];
   const events = [...communityEvents(groups, now), ...radarEvents(frame, followed, (lat, lon) => analysePoint(lat, lon, frame, null), now)];
-  let ok = 0, fail = 0, planned = 0;
+  let ok = 0, fail = 0, planned = 0, deferred = 0;
   if (events.length) {
     const ledger = { wasSent: (s, k) => stub.pushWasSent(s, k), lastSentPrefix: (s, p) => stub.pushLastSentPrefix(s, p), sentSince: (s, t) => stub.pushSentSince(s, t) };
-    const plan = await planSends(subs, events, ledger, now); planned = plan.length;
+    const all = await planSends(subs, events, ledger, now); planned = all.length;
+    // Never let pushes take this run past the subrequest limit: the rest stay unmarked in the ledger and go next run.
+    const plan = all.slice(0, pushAllowance(budget.used)); deferred = all.length - plan.length;
     for (const p of plan) {
       try {
         // radar signals go stale fast (30 min TTL); community reports stay relevant a little longer (2 h)
-        const r = await sendWebPush(p.sub, p.message, { ...vapid, subject: VAPID_SUBJECT }, fetch, p.message.cat === "radar" ? 1800 : 7200, "high");
+        const r = await sendWebPush(p.sub, p.message, { ...vapid, subject: VAPID_SUBJECT }, f, p.message.cat === "radar" ? 1800 : 7200, "high");
         await stub.pushResult(p.sub.endpoint, r);
         if (r.ok) { await stub.pushMarkSent(p.subKey, p.eventKey); ok++; } else fail++;   // failed sends retry next run
       } catch (e) { fail++; errors.push("push: " + String(e.message || e).slice(0, 80)); }
     }
   }
   await stub.pushPruneSent(now - 7 * 86400e3);
-  await stub.cfgSet("push:lastRun", { at: now, subs: subs.length, events: events.length, planned, ok, fail });
+  await stub.cfgSet("push:lastRun", { at: now, subs: subs.length, events: events.length, planned, deferred, ok, fail, subrequests: budget.used });
 }
 
 export default {

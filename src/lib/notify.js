@@ -15,6 +15,11 @@ export const RADAR_COOLDOWN_MS = 3 * 3600e3;     // at most one radar alert per 
 export const MATCH_KM = 10;                      // a report within 10 km of a followed place counts for that place
 export const MAX_PER_HOUR = 4, MAX_PER_DAY = 12; // per device, across categories — avoid notification fatigue
 export const MAX_SENDS_PER_RUN = 25;             // bound CPU per cron run (free plan)
+// Workers Free allows 50 outbound subrequests per invocation (cron included); each push is one. The collector counts its
+// own fetches, and pushes only use what is left minus a reserve for un-counted calls (Telegram webhook self-heal).
+export const SUBREQUEST_LIMIT = 50, SUBREQUEST_RESERVE = 4;
+export function pushAllowance(used) { return Math.max(0, Math.min(MAX_SENDS_PER_RUN, SUBREQUEST_LIMIT - SUBREQUEST_RESERVE - used)); }
+export function countingFetch(budget, f = fetch) { return (...a) => { budget.used++; return f(...a); }; }
 
 export function subKey(endpoint) { let h = 0x811c9dc5; const s = String(endpoint); for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); } return (h >>> 0).toString(36); }
 

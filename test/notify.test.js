@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { communityEvents, radarEvents, matchPlace, buildMessage, planSends, sanitizeSubscription, subKey,
-  RADAR_COOLDOWN_MS, MAX_PER_HOUR } from "../src/lib/notify.js";
+  RADAR_COOLDOWN_MS, MAX_PER_HOUR, pushAllowance, countingFetch, SUBREQUEST_LIMIT, SUBREQUEST_RESERVE, MAX_SENDS_PER_RUN } from "../src/lib/notify.js";
 
 const NOW = Date.UTC(2026, 10, 14, 10, 0);
 const mirdif = { id: "mirdif", n: "Mirdif", a: "مردف", lat: 25.2244, lon: 55.4141 };
@@ -91,4 +91,23 @@ test("sanitizeSubscription keeps only delivery data, rejects non-https/garbage, 
   assert.deepEqual(s.places.map((p) => p.id), ["mirdif"]);
   assert.deepEqual(s.cats, { radar: false, community: true, warning: true });
   assert.equal(s.lang, "ar");
+});
+
+test("push sends never push a cron run past the free-plan subrequest limit", () => {
+  assert.equal(SUBREQUEST_LIMIT, 50);
+  // a typical run (~16 fetches) still allows the full per-run cap
+  assert.equal(pushAllowance(16), MAX_SENDS_PER_RUN);
+  // worst case before pushes (3 new radar frames + scan + YouTube/Instagram cache misses + Telegram): 26 used
+  assert.equal(26 + pushAllowance(26) + SUBREQUEST_RESERVE <= SUBREQUEST_LIMIT, true);
+  assert.equal(pushAllowance(26), 50 - 26 - SUBREQUEST_RESERVE);
+  // exhausted budget → no sends this run (they stay unmarked in the ledger and retry next run)
+  assert.equal(pushAllowance(48), 0);
+  assert.equal(pushAllowance(80), 0);
+});
+
+test("countingFetch counts every outbound call, including failures", async () => {
+  const budget = { used: 0 };
+  const f = countingFetch(budget, async (u) => { if (String(u).includes("bad")) throw new Error("x"); return { ok: true }; });
+  await f("https://a"); await f("https://b"); await f("https://bad").catch(() => {});
+  assert.equal(budget.used, 3);
 });
