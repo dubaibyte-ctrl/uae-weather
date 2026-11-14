@@ -16,7 +16,7 @@ Object.assign(I18N.en, {
   p_cat_warning: "Official weather warnings", p_cat_warning_d: "No authorized official source is connected yet — this will only notify once one exists.",
   p_areas: "Areas I follow ({0})", p_areas_none: "You don't follow any areas yet — add a neighborhood below.", p_add: "Follow a neighborhood (e.g. Mirdif, Al Ain, Masafi)…",
   p_test: "Send a test notification", p_test_hint: "A test arrives in about 45 seconds — close the app now to confirm background delivery.",
-  p_test_sent: "Test queued. Close the app — it should arrive in ~45 s.", p_test_wait: "Please wait a minute before another test.",
+  p_test_sent: "Test queued. Close the app — it should arrive in ~45 s.", p_dup: "Test duplicate protection", p_dup_sent: "Queued: the same alert will be sent twice in ~45 s. You should get ONE alert (one sound/vibration).", p_test_wait: "Please wait a minute before another test.",
   p_err: "Couldn't update notifications: {0}", p_limits: "Max 4 alerts/hour, 12/day. Old posts and stale radar are never sent as current.",
   p_rm: "Remove", p_saving: "Saving…", hdr_notif: "🔔 Notifications",
 });
@@ -33,7 +33,7 @@ Object.assign(I18N.ar, {
   p_cat_warning: "التحذيرات الرسمية", p_cat_warning_d: "لا يوجد مصدر رسمي مصرّح به متصل بعد — لن يصل تنبيه إلا عند توفره.",
   p_areas: "المناطق التي أتابعها ({0})", p_areas_none: "لا تتابع أي منطقة بعد — أضف حيًا بالأسفل.", p_add: "تابِع حيًا (مثل مردف، العين، مسافي)…",
   p_test: "إرسال تنبيه تجريبي", p_test_hint: "يصل التنبيه التجريبي بعد نحو 45 ثانية — أغلق التطبيق الآن للتأكد من الوصول في الخلفية.",
-  p_test_sent: "تم جدولة الاختبار. أغلق التطبيق — يصل خلال ~45 ثانية.", p_test_wait: "انتظر دقيقة قبل اختبار آخر.",
+  p_test_sent: "تم جدولة الاختبار. أغلق التطبيق — يصل خلال ~45 ثانية.", p_dup: "اختبار منع التكرار", p_dup_sent: "تمت الجدولة: سيُرسل التنبيه نفسه مرتين خلال ~45 ثانية. يجب أن يصلك تنبيه واحد فقط (صوت/اهتزاز واحد).", p_test_wait: "انتظر دقيقة قبل اختبار آخر.",
   p_err: "تعذّر تحديث التنبيهات: {0}", p_limits: "حد أقصى 4 تنبيهات/ساعة و12/يوم. لا تُرسل المنشورات القديمة ولا الرادار القديم كأنها حالية.",
   p_rm: "إزالة", p_saving: "جارٍ الحفظ…", hdr_notif: "🔔 التنبيهات",
 });
@@ -94,8 +94,8 @@ async function disablePush() {
   catch (e) { P.msg = t("p_err", e.message || e); }
   finally { P.busy = false; renderPush(); }
 }
-async function sendTest() {
-  try { const r = await postJSON("/api/push/test", { endpoint: P.sub.endpoint, delayMs: 45000 }); P.msg = r.ok ? t("p_test_sent") : t("p_test_wait"); }
+async function sendTest(dup = false) {
+  try { const r = await postJSON("/api/push/test", { endpoint: P.sub.endpoint, delayMs: 45000, dup }); P.msg = r.ok ? t(dup ? "p_dup_sent" : "p_test_sent") : t("p_test_wait"); }
   catch (e) { P.msg = /rate/.test(e.message) ? t("p_test_wait") : t("p_err", e.message); }
   renderPush();
 }
@@ -119,12 +119,12 @@ function renderPush() {
   h += `<h3>${t("p_areas", areas.length)}</h3>`;
   h += areas.length ? `<div class="pareas">` + areas.map((a) => `<span class="pchip">${esc(lang === "ar" ? a.a || a.n : a.n)} <button class="link prm" data-rm="${esc(a.id)}" aria-label="${t("p_rm")}">✕</button></span>`).join("") + `</div>` : `<p class="muted sm">${t("p_areas_none")}</p>`;
   h += `<div class="padd"><input id="pQ" type="search" autocomplete="off" placeholder="${esc(t("p_add"))}" value="${esc(P.q)}"><div id="pRes" class="results" hidden></div></div>`;
-  if (P.sub) h += `<div class="acts" style="margin-top:10px"><button class="btn" id="pTest">${t("p_test")}</button><button class="btn" id="pOff">${t("p_disable")}</button></div><div class="muted sm">${t("p_test_hint")}</div>`;
+  if (P.sub) h += `<div class="acts" style="margin-top:10px"><button class="btn" id="pTest">${t("p_test")}</button><button class="btn" id="pDup">${t("p_dup")}</button><button class="btn" id="pOff">${t("p_disable")}</button></div><div class="muted sm">${t("p_test_hint")}</div>`;
   h += `<div class="muted sm" style="margin-top:6px">${t("p_limits")}</div>`;
   if (P.msg) h += `<div class="pmsg">${esc(P.msg)}</div>`;
   box.innerHTML = h;
   const on = (id, f) => { const el = document.getElementById(id); if (el) el.addEventListener("click", f); };
-  on("pEnable", enablePush); on("pOff", disablePush); on("pTest", sendTest);
+  on("pEnable", enablePush); on("pOff", disablePush); on("pTest", () => sendTest(false)); on("pDup", () => sendTest(true));
   on("pInstall", async () => { if (!P.installEvt) return; P.installEvt.prompt(); await P.installEvt.userChoice.catch(() => {}); P.installEvt = null; renderPush(); });
   box.querySelectorAll("[data-cat]").forEach((cb) => cb.addEventListener("change", () => { P.cats[cb.dataset.cat] = cb.checked; ls("pushCats", P.cats); scheduleSync(); }));
   box.querySelectorAll("[data-rm]").forEach((b) => b.addEventListener("click", () => {

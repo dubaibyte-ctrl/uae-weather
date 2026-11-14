@@ -88,13 +88,13 @@ export class ValidationLog extends DurableObject {
   pushVapidPublic() { const v = this.cfgGet("push:vapid"); return v ? v.publicKey : null; }
   // Real background test: queue a test push for ~delay later, delivered by a Durable Object alarm through the normal Web
   // Push path — so the user can close the app first and confirm a closed-app notification arrives. One per minute.
-  async pushQueueTest(endpoint, delayMs = 45000) {
+  async pushQueueTest(endpoint, delayMs = 45000, dup = false) {
     if (!this.pushGet(endpoint)) return { ok: false, error: "not_subscribed" };
     const sk = subKey(endpoint), last = this.cfgGet("push:testlast:" + sk) || 0;
     if (Date.now() - last < 60000) return { ok: false, error: "rate_limited" };
     const q = (this.cfgGet("push:testq") || []).filter((x) => x.endpoint !== endpoint);
     const due = Date.now() + Math.min(Math.max(delayMs, 15000), 120000);
-    q.push({ endpoint, due }); this.cfgSet("push:testq", q); this.cfgSet("push:testlast:" + sk, Date.now());
+    q.push({ endpoint, due, dup: !!dup }); this.cfgSet("push:testq", q); this.cfgSet("push:testlast:" + sk, Date.now());
     const cur = await this.ctx.storage.getAlarm(); if (!cur || cur > due) await this.ctx.storage.setAlarm(due);
     return { ok: true, dueMs: due };
   }
@@ -108,7 +108,11 @@ export class ValidationLog extends DurableObject {
       const sub = this.pushGet(x.endpoint); if (!sub) continue;
       const m = TEST_MSG[sub.lang === "ar" ? "ar" : "en"];
       try {
-        const r = await sendWebPush(sub, { ...m, tag: "test", url: "/?tab=alerts", ts: now, cat: "test" }, { ...vapid, subject: VAPID_SUBJECT }, fetch, 600, "high");
+        // Same id on every copy: a duplicate-protection test sends the identical payload twice, like a server retry
+        // after a lost response; the phone should alert once.
+        const payload = { ...m, id: "test:" + x.due, tag: "test", url: "/?tab=alerts", ts: now, cat: "test" };
+        let r = await sendWebPush(sub, payload, { ...vapid, subject: VAPID_SUBJECT }, fetch, 600, "high");
+        if (r.ok && x.dup) r = await sendWebPush(sub, payload, { ...vapid, subject: VAPID_SUBJECT }, fetch, 600, "high");
         this.pushResult(sub.endpoint, r);
         this.cfgSet("push:lastTest", { at: now, status: r.status, ok: r.ok }); if (r.ok) sent++;
       } catch (e) { this.cfgSet("push:lastTest", { at: now, error: String(e.message || e).slice(0, 120) }); }

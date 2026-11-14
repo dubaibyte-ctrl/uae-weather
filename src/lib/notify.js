@@ -150,7 +150,7 @@ export function buildMessage(ev, lang = "en", followed = null) {
   }
   const q = new URLSearchParams({ tab: "map", place: ev.placeId, lat: String(ev.lat), lon: String(ev.lon) });
   if (ev.groupId) q.set("report", ev.groupId);
-  return { title, body, tag: ev.cat === "radar" ? ev.cooldownKey : ev.key, url: "/?" + q.toString(), ts: ev.timeMs, lang: L, dir: L === "ar" ? "rtl" : "ltr", cat: ev.cat };
+  return { id: ev.key, title, body, tag: ev.cat === "radar" ? ev.cooldownKey : ev.key, url: "/?" + q.toString(), ts: ev.timeMs, lang: L, dir: L === "ar" ? "rtl" : "ltr", cat: ev.cat };
 }
 
 // ---- plan: which (subscription, message) pairs to send this run ----

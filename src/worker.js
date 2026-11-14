@@ -555,7 +555,7 @@ async function handlePush(req, env, u) {
   if (!endpoint) return json({ ok: false, error: "endpoint required" }, 400, PUSH_HDR);
   if (op === "unsubscribe") { await stub.pushDelete(endpoint); return json({ ok: true }, 200, PUSH_HDR); }
   if (op === "status") { const s = await stub.pushGet(endpoint); return json({ ok: true, subscribed: !!s, cats: s ? s.cats : null, places: s ? s.places.map((p) => p.id) : [], lang: s ? s.lang : null }, 200, PUSH_HDR); }
-  if (op === "test") return json(await stub.pushQueueTest(endpoint, Number(body.delayMs) || 45000), 200, PUSH_HDR);
+  if (op === "test") return json(await stub.pushQueueTest(endpoint, Number(body.delayMs) || 45000, body.dup === true), 200, PUSH_HDR);
   return json({ ok: false, error: "not found" }, 404, PUSH_HDR);
 }
 

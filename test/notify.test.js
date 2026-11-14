@@ -111,3 +111,13 @@ test("countingFetch counts every outbound call, including failures", async () =>
   await f("https://a"); await f("https://b"); await f("https://bad").catch(() => {});
   assert.equal(budget.used, 3);
 });
+
+test("every alert carries a stable event id, identical on retry", () => {
+  const ev = communityEvents([group({ observedMs: NOW - 10 * 60000 })], NOW)[0];
+  const a = buildMessage(ev, "ar", mirdif), b = buildMessage(ev, "ar", mirdif);
+  assert.equal(a.id, "c:g1"); assert.equal(a.id, b.id);
+  const r = radarEvents({ ms: NOW - 5 * 60000 }, [mirdif], () => ({ status: "over", nearestKm: 0 }), NOW)[0];
+  const m = buildMessage(r, "en");
+  assert.equal(m.id, "r:mirdif:" + (NOW - 5 * 60000));     // per radar frame
+  assert.equal(m.tag, "r:mirdif:");                          // newer frame replaces the older card for that place
+});
