@@ -56,6 +56,7 @@ function setTab(tab) {
   moveMap(tab === "map" ? "map" : "home");         // map lives on Home and Map; Home is the default host
   if (tab === "home" && window.renderHome) renderHome();
   if (tab === "alerts" && window.renderAlertsView) renderAlertsView();
+  if (tab === "more" && typeof loadValidation === "function" && !S.val) loadValidation().then(() => { if (typeof render === "function") render(); });
   window.scrollTo({ top: 0, behavior: "instant" in window ? "instant" : "auto" });
 }
 function renderTabbar() {

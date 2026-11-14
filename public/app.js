@@ -369,7 +369,9 @@ async function loadAll() {
   if (S.busy) return; S.busy = true;
   try {
     S.log = [];
-    await Promise.all([loadRadar(), loadMetar(), loadOM(), loadValidation(), window.loadRain ? window.loadRain() : null, window.loadCommunity ? window.loadCommunity() : null]);
+    // Validation stats + collector health feed only the diagnostics under More; don't poll them from every open tab.
+    const wantDiag = typeof H === "undefined" || H.tab === "more";
+    await Promise.all([loadRadar(), loadMetar(), loadOM(), wantDiag ? loadValidation() : null, window.loadRain ? window.loadRain() : null, window.loadCommunity ? window.loadCommunity() : null]);
     await probeAll(); S.lastLoad = Date.now(); render();
   } finally { S.busy = false; }
 }

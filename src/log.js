@@ -37,6 +37,10 @@ export class ValidationLog extends DurableObject {
       url TEXT, sig TEXT, dup_of TEXT, has_location INTEGER, created_ms INTEGER, group_id TEXT)`);
     // Existing instances created the table before group_id existed; add it in place (ignored if already present).
     try { this.sql.exec("ALTER TABLE community ADD COLUMN group_id TEXT"); } catch (e) { /* column exists */ }
+    // Read-budget indexes (Durable Objects free tier bills every row SCANNED): time-range queries and prunes must use an
+    // index, or each one scans the whole table. Built once; IF NOT EXISTS makes later startups free.
+    this.sql.exec("CREATE INDEX IF NOT EXISTS metar_obs ON metar(obs_ms)");
+    this.sql.exec("CREATE INDEX IF NOT EXISTS community_pub ON community(publish_ms)");
     // Web Push subscriptions. Only what delivery needs: the browser's push endpoint + its two encryption keys, the place ids
     // the user follows, the categories they enabled and the notification language. No IP, user agent, name or location.
     this.sql.exec(`CREATE TABLE IF NOT EXISTS push_subs(
@@ -44,6 +48,7 @@ export class ValidationLog extends DurableObject {
       created_ms INTEGER, updated_ms INTEGER, last_ok_ms INTEGER, fail_count INTEGER DEFAULT 0)`);
     // Dedupe ledger: one row per (subscription, weather event) already notified. sub_key is a hash, not the endpoint.
     this.sql.exec(`CREATE TABLE IF NOT EXISTS push_sent(sub_key TEXT, event_key TEXT, sent_ms INTEGER, PRIMARY KEY(sub_key, event_key))`);
+    this.sql.exec("CREATE INDEX IF NOT EXISTS push_sent_ms ON push_sent(sent_ms)");
   }
 
   // ---- Web Push subscriptions ----
@@ -189,13 +194,25 @@ export class ValidationLog extends DurableObject {
     for (const r of radar)
       this.sql.exec("INSERT OR IGNORE INTO radar VALUES(?,?,?,?,?,?)", r.frameMs, r.station, r.state, r.echo, r.alpha, r.rgb);
     this.sql.exec("INSERT OR REPLACE INTO runs VALUES(?,?,?,?)", at, metars.length, new Set(radar.map((r) => r.frameMs)).size, errors.join(" | "));
-    const cutoff = Date.now() - KEEP_DAYS * 86400e3;
-    this.sql.exec("DELETE FROM metar WHERE obs_ms < ?", cutoff);
-    this.sql.exec("DELETE FROM radar WHERE frame_ms < ?", cutoff);
-    this.sql.exec("DELETE FROM runs WHERE at_ms < ?", cutoff);
+    // Retention prune + table counts: once a day, not every run (each was a full-table read on the free tier).
+    const day = new Date().toISOString().slice(0, 10);
+    if (this.cfgGet("maint:pruneDay") !== day) {
+      const cutoff = Date.now() - KEEP_DAYS * 86400e3;
+      this.sql.exec("DELETE FROM metar WHERE obs_ms < ?", cutoff);
+      this.sql.exec("DELETE FROM radar WHERE frame_ms < ?", cutoff);
+      this.sql.exec("DELETE FROM runs WHERE at_ms < ?", cutoff);
+      this.cfgSet("counts", { metar: this.sql.exec("SELECT COUNT(*) AS n FROM metar").one().n, radar: this.sql.exec("SELECT COUNT(*) AS n FROM radar").one().n,
+        runs: this.sql.exec("SELECT COUNT(*) AS n FROM runs").one().n, at: Date.now() });
+      this.cfgSet("maint:pruneDay", day);
+    }
   }
 
   summary(days = 30) {
+    const ck = "cache:summary:" + days, hit = this.cfgGet(ck);
+    if (hit && Date.now() - hit.at < 3 * 3600e3) return hit.v;
+    const v = this.summaryFresh(days); this.cfgSet(ck, { at: Date.now(), v }); return v;
+  }
+  summaryFresh(days = 30) {
     const since = Date.now() - days * 86400e3;
     const metars = this.sql.exec("SELECT station, obs_ms AS obsMs, wx, rain, thunder, hail FROM metar WHERE obs_ms > ?", since).toArray();
     const radar = this.sql.exec("SELECT frame_ms AS frameMs, station, state, echo, alpha FROM radar WHERE frame_ms > ?", since).toArray();
@@ -215,11 +232,8 @@ export class ValidationLog extends DurableObject {
 
   health() {
     const last = this.sql.exec("SELECT at_ms, metar_n, frames_n, errors FROM runs ORDER BY at_ms DESC LIMIT 1").toArray()[0] || null;
-    const counts = {
-      metar: this.sql.exec("SELECT COUNT(*) AS n FROM metar").one().n,
-      radar: this.sql.exec("SELECT COUNT(*) AS n FROM radar").one().n,
-      runs: this.sql.exec("SELECT COUNT(*) AS n FROM runs").one().n,
-    };
+    const snap = this.cfgGet("counts") || {};      // daily snapshot (see record) — avoids full-table COUNT(*) per request
+    const counts = { metar: snap.metar ?? null, radar: snap.radar ?? null, runs: snap.runs ?? null, countsAt: snap.at ?? null };
     counts.scanFrames = this.sql.exec("SELECT COUNT(*) AS n FROM scanframe").one().n;
     counts.community = this.sql.exec("SELECT COUNT(*) AS n FROM community").one().n;
     const lastReport = this.sql.exec("SELECT publish_ms, channel FROM community ORDER BY publish_ms DESC LIMIT 1").toArray()[0] || null;

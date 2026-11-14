@@ -6,7 +6,7 @@ const { ValidationLog } = await import("../src/log.js");
 
 function makeLog() {
   const db = new DatabaseSync(":memory:");
-  const sql = { exec(q, ...b) { const s = db.prepare(q); if (/^\s*(SELECT|WITH)/i.test(q)) { const rows = s.all(...b); return { toArray: () => rows, one: () => rows[0] }; } s.run(...b); return { toArray: () => [], one: () => undefined }; } };
+  const sql = { exec(q, ...b) { const s = db.prepare(q); if (/^\s*(SELECT|WITH|EXPLAIN)/i.test(q)) { const rows = s.all(...b); return { toArray: () => rows, one: () => rows[0] }; } s.run(...b); return { toArray: () => [], one: () => undefined }; } };
   return new ValidationLog({ storage: { sql } }, {});
 }
 const now = Date.now();
@@ -18,7 +18,9 @@ test("record is idempotent and health reports the last run", () => {
   const payload = { metars: [m("OMDB", now - 3600e3)], radar: [r("OMDB", now - 3600e3, 0)], errors: [], at: now };
   log.record(payload); log.record(payload);
   const h = log.health();
-  assert.deepEqual(h.counts, { metar: 1, radar: 1, runs: 1, scanFrames: 0, community: 0 });
+  const { countsAt, ...counts } = h.counts;          // big-table counts come from the once-a-day snapshot
+  assert.deepEqual(counts, { metar: 1, radar: 1, runs: 1, scanFrames: 0, community: 0 });
+  assert.ok(countsAt > 0);
   assert.equal(h.last.metar_n, 1);
   assert.deepEqual(log.knownFrames(), [now - 3600e3]);
 });
@@ -109,4 +111,20 @@ test("connector state round-trips", () => {
   assert.equal(log.getConnState("youtube:storm_centre"), null);
   log.setConnState("youtube:storm_centre", { ok: true, accepted: 3, skipped: 2 });
   assert.deepEqual(log.connStates(["youtube:storm_centre"])[0], { id: "youtube:storm_centre", ok: true, accepted: 3, skipped: 2 });
+});
+
+test("read budget: time-range queries use indexes, prune runs once a day, summary is cached", () => {
+  const log = makeLog();
+  const plan = (q) => log.sql.exec("EXPLAIN QUERY PLAN " + q).toArray().map((r) => r.detail).join(" | ");
+  assert.match(plan("SELECT station FROM metar WHERE obs_ms > 0"), /USING (COVERING )?INDEX metar_obs/, "metar-by-time must not scan the table");
+  assert.match(plan("DELETE FROM metar WHERE obs_ms < 0"), /USING (COVERING )?INDEX metar_obs|SEARCH/);
+  assert.match(plan("SELECT id FROM community WHERE publish_ms > 0"), /INDEX community_pub/);
+  log.record({ metars: [m("OMDB", now - 3600e3)], radar: [], errors: [], at: now });
+  const day = log.cfgGet("maint:pruneDay"); assert.equal(day, new Date().toISOString().slice(0, 10));
+  log.cfgSet("counts", { metar: 999, radar: 0, runs: 0, at: 1 });       // a second run the same day must not recount
+  log.record({ metars: [m("OMDB", now - 1800e3)], radar: [], errors: [], at: now + 1 });
+  assert.equal(log.health().counts.metar, 999);
+  const s1 = log.summary(30); log.record({ metars: [m("OMFJ", now - 900e3, "-RA", 1)], radar: [], errors: [], at: now + 2 });
+  assert.deepEqual(log.summary(30), s1, "cached for 3 h");
+  assert.notDeepEqual(log.summaryFresh(30).metarReports, s1.metarReports);
 });
