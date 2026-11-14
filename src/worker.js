@@ -58,6 +58,7 @@ async function collect(env) {
   try { await runConnectors(env, stub, errors); } catch (e) { errors.push("connectors: " + (e.message || e)); }
   try { await reparseCommunityOnce(stub); } catch (e) { errors.push("reparse: " + (e.message || e)); }
   try { await quarantineIgPromoOnce(stub); } catch (e) { errors.push("ig-cleanup: " + (e.message || e)); }
+  try { await landmarkReparseOnce(stub); } catch (e) { errors.push("landmark-reparse: " + (e.message || e)); }
   if (errors.length) await stub.noteErrors(at, errors);
 }
 
@@ -100,6 +101,35 @@ async function reparseCommunityOnce(stub) {
   if (toInsert.length) await stub.saveReports(toInsert);
   for (const id of toDelete) await stub.deleteCommunity(id);
   await stub.cfgSet("maint:reparseV2", { at: Date.now(), inserted: toInsert.length, deleted: toDelete.length });
+}
+
+// One-time maintenance: upgrade stored Instagram/YouTube report pins to the CURRENT connector classifier, so newly-added
+// landmarks (e.g. Zayed Port, Jebel Yibir) replace a generic emirate-capital pin on posts that named them. Re-runs
+// buildRows over each stored post's text: inserts any newly-recognised precise place and drops only a generic
+// emirate-capital pin that a specific place now supersedes. Never touches Telegram rows or quarantined data. Runs once.
+async function landmarkReparseOnce(stub) {
+  if (await stub.cfgGet("maint:landmarkReparseV1")) return;
+  const rows = (await stub.communityAll()).filter((r) => (r.source === "instagram" || r.source === "youtube") && !r.dup_of);
+  const groups = new Map();
+  for (const r of rows) {
+    const extId = r.id.slice(r.source.length + 1, r.id.lastIndexOf(":"));
+    const key = r.source + "\u0000" + extId;
+    if (!groups.has(key)) groups.set(key, { source: r.source, extId, rows: [] });
+    groups.get(key).rows.push(r);
+  }
+  const toInsert = [], toDelete = [];
+  for (const g of groups.values()) {
+    const rep = g.rows[0];
+    const want = buildRows({ source: g.source, extId: g.extId, channel: rep.channel, channelUser: rep.channel_user, url: rep.url, title: rep.text || "", publishedMs: rep.publish_ms, observedMs: rep.observed_ms });
+    const wantIds = new Set(want.map((w) => w.placeId));
+    const have = new Set(g.rows.map((r) => r.place_id));
+    const hasSpecific = want.some((w) => !EMIRATE_CAPITALS.has(w.placeId));
+    for (const w of want) if (!have.has(w.placeId)) toInsert.push(w);
+    for (const r of g.rows) if (!wantIds.has(r.place_id) && EMIRATE_CAPITALS.has(r.place_id) && hasSpecific) toDelete.push(r.id);
+  }
+  if (toInsert.length) await stub.saveReports(toInsert);
+  for (const id of toDelete) await stub.deleteCommunity(id);
+  await stub.cfgSet("maint:landmarkReparseV1", { at: Date.now(), inserted: toInsert.length, deleted: toDelete.length });
 }
 
 // One-time maintenance: remove the false UAE pins generated before the promotional-hashtag fix. A Gulf-wide account
@@ -462,8 +492,11 @@ async function handleCommunity(env, u) {
     account: r.channel_user ? "@" + String(r.channel_user).replace(/^@/, "") : null,
     url: canonicalChannelUrl(r.source, r.channel_user),
   }])).values()];
-  // Ingest-latency summary (median/max over located, non-duplicate reports) so the UI can show typical collection delay.
-  const lats = reports.filter((r) => r.hasLocation && !r.duplicateOf && r.latencyMs != null).map((r) => r.latencyMs).sort((a, b) => a - b);
+  // Ingest-latency summary: real-time pipeline delay only. A post older than 6h on first sight was caught inside the
+  // connector's 48h look-back window, not delayed by the pipeline, so it would inflate the figure — exclude it. What
+  // remains measures how fast a freshly-published post reaches the feed (floored by the 10-minute cron).
+  const nowMs = Date.now();
+  const lats = reports.filter((r) => r.hasLocation && !r.duplicateOf && r.latencyMs != null && (nowMs - r.publishMs) < 6 * 3600e3).map((r) => r.latencyMs).sort((a, b) => a - b);
   const latency = lats.length ? { medianMs: lats[Math.floor(lats.length / 2)], maxMs: lats[lats.length - 1], n: lats.length, cronFloorMs: 10 * 60000 } : null;
   return json({
     now: Date.now(), days, reports, groups, channels, latency,
