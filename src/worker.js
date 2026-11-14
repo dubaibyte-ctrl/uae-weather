@@ -416,7 +416,8 @@ function buildGroups(reports) {
     const verify = members.reduce((best, m) => (RANK[m.verify] > RANK[best] ? m.verify : best), "conflicting");
     const seen = new Set(), sources = [];
     for (const m of members) { const k = m.source + "|" + (m.url || m.channel); if (seen.has(k)) continue; seen.add(k); sources.push({ source: m.source, channel: m.channel, url: m.url, publishMs: m.publishMs, verify: m.verify }); }
-    groups.push({ id: g.id, event: rep.event, place: rep.place, emirate: rep.emirate, text: rep.text, lang: rep.lang, publishMs: rep.publishMs, observedMs: rep.observedMs, verify, verifyDetail: rep.verifyDetail, sources, sourceCount: sources.length, memberIds: members.map((m) => m.id) });
+    const latencies = members.map((m) => m.latencyMs).filter((x) => x != null);
+    groups.push({ id: g.id, event: rep.event, place: rep.place, emirate: rep.emirate, text: rep.text, lang: rep.lang, publishMs: rep.publishMs, observedMs: rep.observedMs, verify, verifyDetail: rep.verifyDetail, sources, sourceCount: sources.length, memberIds: members.map((m) => m.id), latencyMs: latencies.length ? Math.min(...latencies) : null });
   }
   return groups.sort((a, b) => b.publishMs - a.publishMs);
 }
@@ -446,6 +447,11 @@ async function handleCommunity(env, u) {
       forwarded: !!r.forwarded, forwardMs: r.forward_ms,
       duplicateOf: r.dup_of ? hideChatId(r.dup_of) : null, hasLocation: !!r.has_location, groupId: hideChatId(r.group_id || r.id),
       verify: r.dup_of ? "duplicate" : v.status, verifyDetail: v,
+      // Ingest latency: how long after the post was published it first appeared here (collected_at - published_at).
+      // Floored by the 10-minute collection cron; a connector queue/age window can add more. Published time is NOT
+      // observation time, so this measures pipeline delay only, never how old the weather is.
+      collectedMs: r.created_ms || null,
+      latencyMs: (r.created_ms && r.publish_ms) ? Math.max(0, r.created_ms - r.publish_ms) : null,
     };
   });
   const groups = buildGroups(reports);
@@ -456,8 +462,11 @@ async function handleCommunity(env, u) {
     account: r.channel_user ? "@" + String(r.channel_user).replace(/^@/, "") : null,
     url: canonicalChannelUrl(r.source, r.channel_user),
   }])).values()];
+  // Ingest-latency summary (median/max over located, non-duplicate reports) so the UI can show typical collection delay.
+  const lats = reports.filter((r) => r.hasLocation && !r.duplicateOf && r.latencyMs != null).map((r) => r.latencyMs).sort((a, b) => a - b);
+  const latency = lats.length ? { medianMs: lats[Math.floor(lats.length / 2)], maxMs: lats[lats.length - 1], n: lats.length, cronFloorMs: 10 * 60000 } : null;
   return json({
-    now: Date.now(), days, reports, groups, channels,
+    now: Date.now(), days, reports, groups, channels, latency,
     counts: { total: reports.length, events: groups.length, located: reports.filter((r) => r.hasLocation && !r.duplicateOf).length, duplicates: reports.filter((r) => r.duplicateOf).length, multiSource: groups.filter((g) => g.sources.length > 1).length },
     disclaimer: "Reports are obtained from publicly accessible platform data and are community claims, not measurements. This app is not affiliated with or endorsed by the source accounts. Each report stays unverified unless independently corroborated by radar or airport observations.",
   }, 200, { "cache-control": "no-store" });
@@ -487,7 +496,7 @@ export default {
       const connectors = await stub.connStates(PULL_CONNECTORS.map((c) => c.id));
       // Audit of the one-time false-positive cleanup (counts only; no private data).
       const maint = igCleanup ? { igPromoCleanup: { at: igCleanup.at, postsScanned: igCleanup.postsScanned, postsQuarantined: igCleanup.postsQuarantined, postsKept: igCleanup.postsKept, rowsQuarantined: igCleanup.rowsQuarantined, rowsPreserved: igCleanup.rowsPreserved } } : null;
-      return json({ now: Date.now(), build: "2026-11-14-ig-sources", ...h, telegram: tgStatus, connectors, maint }, 200, { "cache-control": "no-store" });
+      return json({ now: Date.now(), build: "2026-11-14-home-redesign", ...h, telegram: tgStatus, connectors, maint }, 200, { "cache-control": "no-store" });
     }
     if (u.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);

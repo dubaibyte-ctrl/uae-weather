@@ -326,6 +326,8 @@ function render() {
   renderOverview(res); renderMap(res); renderChips(); renderDetail(res); renderAlerts(res); renderValidation(); renderAbout();
   if (window.renderRain) window.renderRain();
   if (window.renderCommunity) window.renderCommunity();
+  if (window.renderHome) window.renderHome();
+  if (window.renderAlertsView) window.renderAlertsView();
   if (S.frames.length) showFrame(S.idx);
 }
 function select(id) { S.sel = id; ls("sel", id); const p = byId(id); if (p && S.map) S.map.panTo([p.lat, p.lng]); render(); window.scrollTo({ top: $("chips").offsetTop - 8, behavior: "smooth" }); }

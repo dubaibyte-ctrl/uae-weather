@@ -22,29 +22,68 @@
     <button id="langBtn" class="ghost" aria-label="Language">ع</button>
   </div>
 </header>
-<div id="alerts"></div>
-<div id="pills" class="pills"></div>
-<section id="overview" class="card overview"></section>
-<section id="rain" class="card rain" aria-live="polite"></section>
-<div id="map" role="application" aria-label="Map"></div>
-<div class="ctl">
-  <button id="play"></button>
-  <input type="range" id="slider" min="0" max="0" value="0" aria-label="Radar time">
-  <span id="frameLbl" class="muted"></span>
+
+<!-- The single Leaflet map + its radar controls. Moved between the Home and Map views on tab switch. -->
+<div id="mapWrap">
+  <div id="map" role="application" aria-label="Map"></div>
+  <div class="ctl">
+    <button id="play"></button>
+    <input type="range" id="slider" min="0" max="0" value="0" aria-label="Radar time">
+    <span id="frameLbl" class="muted"></span>
+  </div>
+  <div id="legend" class="legend"></div>
 </div>
-<div id="legend" class="legend"></div>
-<section class="search">
-  <input id="q" type="search" autocomplete="off" enterkeyhint="search">
-  <div id="results" class="results" hidden></div>
-</section>
-<nav id="chips" class="chips" aria-label="Cities"></nav>
-<main id="detail"></main>
-<section id="community" class="card community" aria-live="polite"></section>
-<section id="validation" class="card"></section>
-<section id="about" class="card"></section>
+
+<main id="app">
+  <!-- ============ HOME ============ -->
+  <section id="view-home" class="view" aria-label="Home">
+    <section id="rainStatus" class="card status" aria-live="polite"></section>
+    <div id="homeMapSlot" class="mapslot"></div>
+    <section id="homeRain" class="card"></section>
+    <section id="homeNearMe" class="card"></section>
+    <section id="homeCommunity" class="card"></section>
+  </section>
+
+  <!-- ============ MAP ============ -->
+  <section id="view-map" class="view" hidden aria-label="Map">
+    <section class="search">
+      <input id="q" type="search" autocomplete="off" enterkeyhint="search">
+      <div id="results" class="results" hidden></div>
+    </section>
+    <nav id="chips" class="chips" aria-label="Cities"></nav>
+    <div id="mapSlot" class="mapslot"></div>
+    <main id="detail"></main>
+  </section>
+
+  <!-- ============ ALERTS ============ -->
+  <section id="view-alerts" class="view" hidden aria-label="Alerts">
+    <div id="alerts"></div>
+    <section id="safetySlot" class="card"></section>
+    <section id="savedSlot" class="card"></section>
+  </section>
+
+  <!-- ============ MORE ============ -->
+  <section id="view-more" class="view" hidden aria-label="More">
+    <div id="pills" class="pills"></div>
+    <section id="rain" class="card rain" aria-live="polite"></section>
+    <section id="community" class="card community" aria-live="polite"></section>
+    <details id="advanced" class="card">
+      <summary id="advancedSummary">Advanced diagnostics</summary>
+      <section id="validation"></section>
+      <section id="about"></section>
+    </details>
+  </section>
+
+  <!-- kept for modules that still populate it; the Home banner supersedes it -->
+  <section id="overview" hidden></section>
+</main>
+
+<nav id="tabbar" class="tabbar" role="tablist" aria-label="Sections"></nav>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="app.js"></script>
 <script src="rain.js"></script>
 <script src="community.js"></script>
+<script src="home.js"></script>
 </body>
 </html>

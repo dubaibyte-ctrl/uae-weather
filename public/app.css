@@ -22,7 +22,10 @@ button.on{background:var(--brand);color:var(--bg);border-color:var(--brand)}
 @media (prefers-color-scheme:dark){#alerts .alert{background:#12304f;color:#d6e9ff}}
 #alerts .alert.rad{background:#efe6fb;border-color:var(--rad);color:#3a1d66}
 @media (prefers-color-scheme:dark){#alerts .alert.rad{background:#2a1f45;color:#e6d9ff}}
-#map{height:46vh;min-height:300px;margin:6px 14px;border-radius:14px;border:1px solid var(--line);z-index:0}
+#mapWrap{margin:0}
+.mapslot{min-height:1px}
+#map{height:42vh;min-height:280px;margin:8px 14px 2px;border-radius:14px;border:1px solid var(--line);z-index:0}
+#view-map #map{height:62vh;min-height:360px}
 .ctl{display:flex;align-items:center;gap:8px;padding:4px 14px;flex-wrap:wrap}
 .ctl input[type=range]{flex:1;min-width:130px;accent-color:var(--brand)}
 .legend{font-size:12px;color:var(--muted);padding:0 14px 4px}
@@ -58,7 +61,50 @@ td,th{border-bottom:1px solid var(--line);padding:3px 4px;text-align:start;verti
 details summary{cursor:pointer;font-weight:600}
 a{color:var(--brand)}
 .leaflet-container{background:#cfdde1;font:inherit}
-@media (min-width:760px){#map{height:56vh}}
+@media (min-width:760px){#map{height:48vh}#view-map #map{height:64vh}}
+
+/* ---------- 4-tab shell ---------- */
+body{padding-bottom:calc(64px + env(safe-area-inset-bottom))}
+.view[hidden]{display:none}
+.tabbar{position:fixed;inset-inline:0;bottom:0;z-index:1200;display:flex;background:var(--card);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom);max-width:980px;margin-inline:auto}
+.tabbar button{flex:1;border:0;border-radius:0;background:transparent;display:flex;flex-direction:column;align-items:center;gap:2px;padding:7px 2px 6px;min-height:56px;color:var(--muted)}
+.tabbar button .ti{font-size:19px;line-height:1}
+.tabbar button .tl{font-size:11px}
+.tabbar button.on{color:var(--brand);font-weight:700}
+.tabbar button.on .ti{transform:translateY(-1px)}
+.link{border:0;background:transparent;color:var(--brand);padding:4px 2px;min-height:0;font-size:13px;font-weight:600}
+.chd{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 6px}
+.chd h2{font-size:16px;margin:0}
+.btn.wide{display:block;width:100%;text-align:center;font-weight:600}
+
+/* ---------- main rain status banner ---------- */
+.status{border-width:1px;border-inline-start-width:5px}
+.status .statline{display:flex;align-items:center;gap:10px}
+.status .sicon{font-size:26px;line-height:1}
+.status .stext{font-size:20px;font-weight:800;letter-spacing:-.01em}
+.status .sareas{font-size:15px;font-weight:600;margin:4px 0 2px}
+.status .reliab{margin-top:6px}
+.status.rain{border-inline-start-color:var(--obs);background:color-mix(in srgb,var(--obs) 7%,var(--card))}
+.status.rain .sicon,.status.rain .stext{color:var(--obs)}
+.status.none{border-inline-start-color:var(--none)}
+.status.none .stext{color:var(--none)}
+.status.unavail{border-inline-start-color:var(--bad);background:color-mix(in srgb,var(--bad) 6%,var(--card))}
+.status.unavail .stext{color:var(--bad)}
+.status.partial{border-inline-start-color:var(--unk)}
+.status.partial .stext{color:var(--muted)}
+
+/* ---------- Home compact lists ---------- */
+.hrlist{list-style:none;margin:2px 0 0;padding:0;display:grid;gap:6px}
+.hrlist li{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.nmhit{font-size:16px;font-weight:700;color:var(--rad)}
+.hcrep{border-inline-start:4px solid var(--unk);padding:4px 0 4px 10px;margin:6px 0;display:grid;gap:2px}
+.hcrep.confirmed{border-inline-start-color:var(--obs)}
+.hcrep.radar{border-inline-start-color:var(--rad)}
+.hcrep.conflicting{border-inline-start-color:var(--warn)}
+.hcr1{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+[dir=rtl] .hcrep{padding:4px 10px 4px 0}
+#view-more .rain,#view-more .community{margin-inline:0}
+#advanced section{margin-top:8px}
 
 .rain h2{font-size:18px}
 .rain h3{text-transform:none;letter-spacing:0;font-size:15px;color:var(--ink);margin:14px 0 4px}

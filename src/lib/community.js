@@ -25,6 +25,8 @@ const stripAl = (s) => s.replace(/^(al|el|ad|ar|as|at|az)\s+/, "").replace(/^(ا
 // (the index is longest-key-first and a matched span is blanked), so these only catch the standalone short form.
 const EXTRA_ALIASES = [
   { ar: "دبا", id: "dibba-al-fujairah" },   // bare "Dibba" → Dibba Al-Fujairah (the main Dibba)
+  { en: "Mina Zayed", id: "zayed-port" },   // Mina Zayed = Zayed Port (precise, not central Abu Dhabi)
+  { ar: "ميناء زايد", id: "zayed-port" },
 ];
 
 // ---- gazetteer index: longest keys first so "Dibba Al Fujairah" wins over "Fujairah" ----

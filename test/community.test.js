@@ -58,11 +58,18 @@ test("places that exist ONLY in a hashtag cluster are treated as promotional, no
 
 test("a caption that names only an emirate pins that emirate's main city (connector path)", () => {
   // English "rain in <Emirate>" with no sub-place — the emirate IS the location, so pin its main city.
-  for (const [cap, id] of [["First autumn rain in Abu Dhabi, Zayed Port", "abu-dhabi"], ["Heavy rain in Dubai right now", "dubai"]]) {
+  for (const [cap, id] of [["First autumn rain in Abu Dhabi city tonight", "abu-dhabi"], ["Heavy rain in Dubai right now", "dubai"]]) {
     const c = classifyItem(cap);
     assert.equal(c.accept, true, cap);
     assert.deepEqual(buildRows({ source: "instagram", extId: "e", channel: "IG", title: cap, publishedMs: 1 }).map((r) => r.placeId), [id]);
   }
+});
+
+test("a specific landmark gets precise coordinates, not the emirate-capital fallback", () => {
+  // The @uaeweatherman example: "Zayed Port" must resolve to the port's own coordinates, not central Abu Dhabi.
+  const rows = buildRows({ source: "instagram", extId: "z", channel: "IG", title: "First autumn rain in Abu Dhabi! 📍 Zayed Port", publishedMs: 1 });
+  assert.deepEqual(rows.map((r) => r.placeId), ["zayed-port"]);
+  assert.ok(Math.abs(rows[0].lat - 24.5151) < 0.01 && Math.abs(rows[0].lon - 54.3782) < 0.01, "precise port coordinates, not 24.45/54.40");
 });
 
 test("a specific sub-place still suppresses the generic emirate-city pin (connector path)", () => {
