@@ -9,9 +9,13 @@ import { ValidationLog } from "./log.js";
 import { STATIONS, STATION_IDS, fetchMetars } from "./lib/metar.js";
 import { fetchIndex, probeFrame } from "./lib/radar.js";
 import { scanFrame, scanCoverage } from "./lib/scan.js";
-import { GRID, ECHO_ALPHA, MIN_CLUSTER_PX } from "../public/lib/radar-geo.js";
+import { GRID, ECHO_ALPHA, MIN_CLUSTER_PX, analysePoint } from "../public/lib/radar-geo.js";
 import { extractReport, reportSignature, verifyReport, classifyItem, buildRows } from "./lib/community.js";
 import { PULL_CONNECTORS, YT_CHANNELS, canonicalChannelUrl } from "./lib/connectors.js";
+import { PLACES } from "./lib/places-data.js";
+import { generateVapidKeys, sendWebPush } from "./lib/webpush.js";
+import { communityEvents, radarEvents, planSends, sanitizeSubscription } from "./lib/notify.js";
+import { VAPID_SUBJECT } from "./log.js";
 
 export { ValidationLog };
 
@@ -59,6 +63,8 @@ async function collect(env) {
   try { await reparseCommunityOnce(stub); } catch (e) { errors.push("reparse: " + (e.message || e)); }
   try { await quarantineIgPromoOnce(stub); } catch (e) { errors.push("ig-cleanup: " + (e.message || e)); }
   try { await landmarkReparseOnce(stub); } catch (e) { errors.push("landmark-reparse: " + (e.message || e)); }
+  try { await sendPushes(env, stub, errors); } catch (e) { errors.push("push: " + (e.message || e)); }
+  try { await stub.pushFlushTests(); } catch (e) { errors.push("push-test: " + (e.message || e)); }   // backstop if an alarm was missed
   if (errors.length) await stub.noteErrors(at, errors);
 }
 
@@ -445,7 +451,7 @@ function buildGroups(reports) {
     const rep = members[0];
     const verify = members.reduce((best, m) => (RANK[m.verify] > RANK[best] ? m.verify : best), "conflicting");
     const seen = new Set(), sources = [];
-    for (const m of members) { const k = m.source + "|" + (m.url || m.channel); if (seen.has(k)) continue; seen.add(k); sources.push({ source: m.source, channel: m.channel, url: m.url, publishMs: m.publishMs, verify: m.verify }); }
+    for (const m of members) { const k = m.source + "|" + (m.url || m.channel); if (seen.has(k)) continue; seen.add(k); sources.push({ source: m.source, channel: m.channel, account: m.account || null, url: m.url, publishMs: m.publishMs, observedMs: m.observedMs || null, verify: m.verify }); }
     const latencies = members.map((m) => m.latencyMs).filter((x) => x != null);
     groups.push({ id: g.id, event: rep.event, place: rep.place, emirate: rep.emirate, text: rep.text, lang: rep.lang, publishMs: rep.publishMs, observedMs: rep.observedMs, verify, verifyDetail: rep.verifyDetail, sources, sourceCount: sources.length, memberIds: members.map((m) => m.id), latencyMs: latencies.length ? Math.min(...latencies) : null });
   }
@@ -458,21 +464,24 @@ function buildGroups(reports) {
 function fnv1a(s) { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); } return (h >>> 0).toString(16).padStart(8, "0"); }
 function hideChatId(id) { return String(id).replace(/^telegram:(-?\d+):/, (_m, cid) => "telegram:c" + fnv1a(cid) + ":"); }
 
-async function handleCommunity(env, u) {
-  const days = Math.min(Math.max(parseInt(u.searchParams.get("days") || "2", 10) || 2, 1), 14);
-  const stub = logStub(env);
+// Shared by /api/community and the push sender so both see identical report ids, groups and verification.
+const PLACE_AR = new Map(PLACES.map((p) => [p.id, p.ar || null]));
+async function buildCommunity(stub, days) {
   const [rows, scan] = await Promise.all([stub.communitySince(days), stub.loadScan(12)]);
-  const earliest = rows.reduce((m, r) => Math.min(m, r.publish_ms), Date.now());
+  const earliest = rows.reduce((m, r) => Math.min(m, r.observed_ms || r.publish_ms), Date.now());
   const metars = await stub.metarsSince(earliest - 60 * 60000);
   const reports = rows.map((r) => {
-    const v = r.has_location ? verifyReport({ lat: r.lat, lon: r.lon, publishMs: r.publish_ms, event: r.event }, scan.frames, metars) : { status: "missing_location", radar: "n/a", metar: "n/a" };
+    // Verify against radar/airport data at the report's OBSERVATION time when the source gives one reliably; otherwise
+    // at its publication time, and say so (verifyBasis) — never against "the latest frame" for an older report.
+    const refMs = r.observed_ms || r.publish_ms;
+    const v = r.has_location ? { ...verifyReport({ lat: r.lat, lon: r.lon, publishMs: refMs, event: r.event }, scan.frames, metars), basis: r.observed_ms ? "observed" : "published-approx" } : { status: "missing_location", radar: "n/a", metar: "n/a" };
     return {
       id: hideChatId(r.id), source: r.source, platform: r.source, channel: r.channel,
       account: r.channel_user ? "@" + String(r.channel_user).replace(/^@/, "") : null,
       channelUrl: canonicalChannelUrl(r.source, r.channel_user),   // canonical profile/channel page (platform-aware)
       url: r.url,                                                    // original post URL (watch / permalink / t.me msg)
       text: r.text, lang: r.lang, event: r.event, events: JSON.parse(r.events || "[]"),
-      place: r.place_id ? { id: r.place_id, name: r.place_name, em: r.em, lat: r.lat, lon: r.lon } : null,
+      place: r.place_id ? { id: r.place_id, name: r.place_name, ar: PLACE_AR.get(r.place_id) || null, em: r.em, lat: r.lat, lon: r.lon } : null,
       emirate: r.em, publishMs: r.publish_ms, observedMs: r.observed_ms,
       forwarded: !!r.forwarded, forwardMs: r.forward_ms,
       duplicateOf: r.dup_of ? hideChatId(r.dup_of) : null, hasLocation: !!r.has_location, groupId: hideChatId(r.group_id || r.id),
@@ -484,7 +493,12 @@ async function handleCommunity(env, u) {
       latencyMs: (r.created_ms && r.publish_ms) ? Math.max(0, r.created_ms - r.publish_ms) : null,
     };
   });
-  const groups = buildGroups(reports);
+  return { rows, scan, reports, groups: buildGroups(reports) };
+}
+
+async function handleCommunity(env, u) {
+  const days = Math.min(Math.max(parseInt(u.searchParams.get("days") || "2", 10) || 2, 1), 14);
+  const { rows, reports, groups } = await buildCommunity(logStub(env), days);
   // One entry per distinct source, with its platform and canonical page built from metadata — never a fabricated
   // Telegram link, and never the private chat id. A private Telegram channel simply has no public URL.
   const channels = [...new Map(rows.map((r) => [r.channel, {
@@ -508,6 +522,67 @@ async function handleCommunity(env, u) {
 // Phase B Business Discovery test endpoints were removed after the live test passed (2026-11-13), before enabling the
 // production Instagram connector. The pure helpers (igDiscover, igTestGuard) remain unit-tested in the lib modules.
 
+/* ============================ Web Push ============================ */
+// Endpoints are same-origin JSON only. A subscription stores just the push endpoint, its two keys, the followed areas,
+// enabled categories and language. The VAPID private key is created and kept inside the Durable Object.
+const PUSH_HDR = { "cache-control": "no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff" };
+async function pushBody(req) {
+  if (req.method !== "POST") return { err: json({ ok: false, error: "POST only" }, 405, PUSH_HDR) };
+  const origin = req.headers.get("origin");
+  if (origin && origin !== new URL(req.url).origin) return { err: json({ ok: false, error: "cross-origin not allowed" }, 403, PUSH_HDR) };
+  if (!/application\/json/i.test(req.headers.get("content-type") || "")) return { err: json({ ok: false, error: "JSON only" }, 415, PUSH_HDR) };
+  const txt = await req.text(); if (txt.length > 16000) return { err: json({ ok: false, error: "too large" }, 413, PUSH_HDR) };
+  try { return { body: JSON.parse(txt) }; } catch { return { err: json({ ok: false, error: "bad JSON" }, 400, PUSH_HDR) }; }
+}
+async function vapidPublic(stub) {
+  const have = await stub.pushVapidPublic(); if (have) return have;
+  return (await stub.pushVapidSetIfAbsent(await generateVapidKeys())).publicKey;
+}
+async function handlePush(req, env, u) {
+  const stub = logStub(env), op = u.pathname.slice("/api/push/".length);
+  if (op === "key") return json({ publicKey: await vapidPublic(stub) }, 200, PUSH_HDR);
+  const { body, err } = await pushBody(req); if (err) return err;
+  if (op === "subscribe") {
+    const s = sanitizeSubscription(body); if (!s) return json({ ok: false, error: "invalid subscription" }, 400, PUSH_HDR);
+    await vapidPublic(stub);
+    const r = await stub.pushUpsert(s);
+    return json({ ok: true, created: r.created, places: s.places.length, cats: s.cats, lang: s.lang }, 200, PUSH_HDR);
+  }
+  const endpoint = body && typeof body.endpoint === "string" ? body.endpoint : null;
+  if (!endpoint) return json({ ok: false, error: "endpoint required" }, 400, PUSH_HDR);
+  if (op === "unsubscribe") { await stub.pushDelete(endpoint); return json({ ok: true }, 200, PUSH_HDR); }
+  if (op === "status") { const s = await stub.pushGet(endpoint); return json({ ok: true, subscribed: !!s, cats: s ? s.cats : null, places: s ? s.places.map((p) => p.id) : [], lang: s ? s.lang : null }, 200, PUSH_HDR); }
+  if (op === "test") return json(await stub.pushQueueTest(endpoint, Number(body.delayMs) || 45000), 200, PUSH_HDR);
+  return json({ ok: false, error: "not found" }, 404, PUSH_HDR);
+}
+
+// Cron: announce NEW, FRESH events to the devices that follow those areas. Radar from the newest fresh scan frame;
+// community from the same grouped/verified reports the app shows. Dedupe + cooldown + caps live in notify.planSends.
+async function sendPushes(env, stub, errors) {
+  const subs = await stub.pushList(); if (!subs.length) return;
+  const vapid = await stub.cfgGet("push:vapid"); if (!vapid) return;
+  const now = Date.now();
+  const { groups, scan } = await buildCommunity(stub, 1);
+  const frame = scan.frames && scan.frames[0];
+  const followed = [...new Map(subs.flatMap((s) => s.places).map((p) => [p.id, p])).values()];
+  const events = [...communityEvents(groups, now), ...radarEvents(frame, followed, (lat, lon) => analysePoint(lat, lon, frame, null), now)];
+  let ok = 0, fail = 0, planned = 0;
+  if (events.length) {
+    const ledger = { wasSent: (s, k) => stub.pushWasSent(s, k), lastSentPrefix: (s, p) => stub.pushLastSentPrefix(s, p), sentSince: (s, t) => stub.pushSentSince(s, t) };
+    const plan = await planSends(subs, events, ledger, now); planned = plan.length;
+    for (const p of plan) {
+      try {
+        // radar signals go stale fast (30 min TTL); community reports stay relevant a little longer (2 h)
+        const r = await sendWebPush(p.sub, p.message, { ...vapid, subject: VAPID_SUBJECT }, fetch, p.message.cat === "radar" ? 1800 : 7200, "high");
+        await stub.pushResult(p.sub.endpoint, r);
+        if (r.ok) { await stub.pushMarkSent(p.subKey, p.eventKey); ok++; } else fail++;   // failed sends retry next run
+      } catch (e) { fail++; errors.push("push: " + String(e.message || e).slice(0, 80)); }
+    }
+  }
+  await stub.pushPruneSent(now - 7 * 86400e3);
+  await stub.cfgSet("push:lastRun", { at: now, subs: subs.length, events: events.length, planned, ok, fail });
+}
+
 export default {
   async fetch(req, env, ctx) {
     const u = new URL(req.url);
@@ -515,6 +590,7 @@ export default {
     if (u.pathname === "/api/telegram-setup" && req.method === "GET") return handleSetupPage();
     if (u.pathname === "/api/telegram-admin") return handleTelegramAdmin(req, env, u);
     if (u.pathname === "/api/community") return handleCommunity(env, u);
+    if (u.pathname.startsWith("/api/push/")) return handlePush(req, env, u);
     if (u.pathname === "/api/metar") return handleMetar(req, ctx);
     if (u.pathname === "/api/validation") {
       const days = Math.min(Math.max(parseInt(u.searchParams.get("days") || "30", 10) || 30, 1), 90);
@@ -529,7 +605,10 @@ export default {
       const connectors = await stub.connStates(PULL_CONNECTORS.map((c) => c.id));
       // Audit of the one-time false-positive cleanup (counts only; no private data).
       const maint = igCleanup ? { igPromoCleanup: { at: igCleanup.at, postsScanned: igCleanup.postsScanned, postsQuarantined: igCleanup.postsQuarantined, postsKept: igCleanup.postsKept, rowsQuarantined: igCleanup.rowsQuarantined, rowsPreserved: igCleanup.rowsPreserved } } : null;
-      return json({ now: Date.now(), build: "2026-11-14-home-redesign", ...h, telegram: tgStatus, connectors, maint }, 200, { "cache-control": "no-store" });
+      // Web Push health: counts and last-run outcome only — never an endpoint or key.
+      const [pstats, plast, ptest] = await Promise.all([stub.pushStats(), stub.cfgGet("push:lastRun"), stub.cfgGet("push:lastTest")]);
+      const push = { ...pstats, lastRun: plast || null, lastTest: ptest || null };
+      return json({ now: Date.now(), build: "2026-11-14-web-push", ...h, telegram: tgStatus, connectors, maint, push }, 200, { "cache-control": "no-store" });
     }
     if (u.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);

@@ -2,6 +2,7 @@
   "name": "UAE Rain & Weather",
   "short_name": "UAE Weather",
   "description": "Live UAE rain radar, airport weather reports and forecasts. Observed, radar and model data kept separate.",
+  "id": "/",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

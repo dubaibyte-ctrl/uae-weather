@@ -161,6 +161,7 @@ function renderHome() {
 
 /* ---------------- Alerts view: safety + saved locations ---------------- */
 function renderAlertsView() {
+  if (window.renderPush) renderPush();
   const safety = document.getElementById("safetySlot");
   if (safety && typeof safetyHTML === "function" && typeof R!=="undefined" && R.status === "ok") safety.innerHTML = safetyHTML();
   else if (safety) safety.innerHTML = `<p class="muted sm">${t("r_loading")}</p>`;
@@ -184,4 +185,4 @@ function renderAlertsView() {
 window.renderHome = renderHome; window.renderAlertsView = renderAlertsView;
 document.addEventListener("DOMContentLoaded", () => { renderTabbar(); setTab(H.tab); });
 // langBtn also needs to re-label the tab bar; hook the existing button
-document.addEventListener("click", (e) => { if (e.target && e.target.id === "langBtn") setTimeout(renderTabbar, 0); });
+document.addEventListener("click", (e) => { if (e.target && e.target.id === "langBtn") setTimeout(() => { renderTabbar(); if (window.pushOnLangChange) pushOnLangChange(); }, 0); });

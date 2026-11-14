@@ -7,9 +7,10 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "test": "node --test test/lib.test.js test/scan.test.js test/community.test.js test/connectors.test.js test/ig-test.test.js && node --import ./test/loader.mjs --test test/log.test.js"
+    "test": "node --test test/lib.test.js test/scan.test.js test/community.test.js test/connectors.test.js test/ig-test.test.js test/webpush.test.js test/notify.test.js && node --import ./test/loader.mjs --test test/log.test.js"
   },
   "devDependencies": {
+    "web-push": "^3.6.7",
     "wrangler": "^4"
   }
 }

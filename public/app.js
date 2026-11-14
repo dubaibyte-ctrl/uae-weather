@@ -39,7 +39,7 @@ const I18N = {
     val_title: "Radar vs airport reports", val_none: "Validation log not available yet", val_since: "Collecting since {0}", val_counts: "{0} comparisons · {1} rain reports", val_insufficient: "Too few rain events to score yet (need at least 5). Rates are withheld rather than guessed.", val_pod: "Detection rate", val_far: "False-alarm rate", val_csi: "Critical success index", val_dry: "Radar echo when no rain reported", val_hit: "Hit", val_miss: "Miss", val_fa: "False alarm", val_cn: "Correct negative", val_issue: "Radar tile read issues: {0}", val_note: "Compared at airport locations only. A radar echo does not always mean rain on the ground.",
     official: "Official warnings", official_text: "Not connected. For official warnings use NCM's UAE Weather app or website.", official_link: "Official channels",
     about: "Data and limits", about_src: "Sources: airport METARs (NOAA AviationWeather), radar by RainViewer (past frames, personal use), forecast by Open-Meteo (CC BY 4.0, non-commercial), map © OpenStreetMap.", about_l1: "Radar shows echoes, not confirmed rain; it has no forecast frames, so no minute-by-minute prediction is shown.", about_l2: "Airport reports are real measurements but only at 9 airports and only every 30 minutes.", about_l3: "Temperature, humidity, wind and rain chances are model values, not station measurements.", about_l4: "Hail is never claimed without an airport hail code.", status: "Source status",
-    notify: "🔔 Alert me while open", notify_on: "🔔 Alerts on", rain_alert: "Rain reported near {0}", echo_alert: "Radar echo near {0} (unconfirmed)", wk: "Today"
+    notify: "🔔 Notifications", notify_on: "🔔 Alerts on", rain_alert: "Rain reported near {0}", echo_alert: "Radar echo near {0} (unconfirmed)", wk: "Today"
   },
   ar: {
     title: "طقس ومطر الإمارات", pill_radar: "الرادار", pill_metar: "تقارير المطارات", pill_model: "نموذج التنبؤ", pill_official: "التحذيرات الرسمية", notconn: "غير متصلة", unavailable: "غير متاح", stale: "قديم", outdated: "قديم جدًا، غير مستخدم", ago: "قبل {0}", min: "د", h: "س", justnow: "الآن",
@@ -56,7 +56,7 @@ const I18N = {
     val_title: "الرادار مقابل تقارير المطارات", val_none: "سجل التحقق غير متاح بعد", val_since: "يجمع البيانات منذ {0}", val_counts: "{0} مقارنة · {1} تقرير مطر", val_insufficient: "عدد حالات المطر قليل جدًا للتقييم بعد (نحتاج 5 على الأقل). لا نخمّن النسب.", val_pod: "نسبة الكشف", val_far: "نسبة الإنذار الكاذب", val_csi: "مؤشر النجاح الحرج", val_dry: "صدى الرادار عند غياب تقارير المطر", val_hit: "إصابة", val_miss: "إخفاق", val_fa: "إنذار كاذب", val_cn: "سلبي صحيح", val_issue: "مشكلات قراءة بلاط الرادار: {0}", val_note: "المقارنة عند مواقع المطارات فقط. صدى الرادار لا يعني دائمًا مطرًا على الأرض.",
     official: "التحذيرات الرسمية", official_text: "غير متصلة. للتحذيرات الرسمية استخدم تطبيق أو موقع المركز الوطني للأرصاد.", official_link: "القنوات الرسمية",
     about: "البيانات والحدود", about_src: "المصادر: تقارير METAR للمطارات (NOAA AviationWeather)، الرادار من RainViewer (إطارات سابقة، استخدام شخصي)، التوقعات من Open-Meteo (CC BY 4.0، غير تجاري)، الخريطة © OpenStreetMap.", about_l1: "الرادار يُظهر أصداء وليس مطرًا مؤكدًا، ولا توجد إطارات مستقبلية لذلك لا يُعرض تنبؤ دقيقة بدقيقة.", about_l2: "تقارير المطارات قياسات حقيقية لكنها في 9 مطارات فقط وكل 30 دقيقة.", about_l3: "الحرارة والرطوبة والرياح واحتمالات المطر قيم نموذج وليست قياسات محطات.", about_l4: "لا نذكر البرَد دون رمز برَد من المطار.", status: "حالة المصادر",
-    notify: "🔔 نبّهني أثناء فتح التطبيق", notify_on: "🔔 التنبيهات مفعّلة", rain_alert: "أمطار مُبلَّغ عنها قرب {0}", echo_alert: "صدى رادار قرب {0} (غير مؤكد)", wk: "اليوم"
+    notify: "🔔 التنبيهات", notify_on: "🔔 التنبيهات مفعّلة", rain_alert: "أمطار مُبلَّغ عنها قرب {0}", echo_alert: "صدى رادار قرب {0} (غير مؤكد)", wk: "اليوم"
   },
 };
 let lang = ls("lang") || ((navigator.language || "").toLowerCase().startsWith("ar") ? "ar" : "en");
@@ -227,7 +227,8 @@ function renderStatic() {
   document.title = t("title"); $("title").textContent = t("title"); $("langBtn").textContent = lang === "ar" ? "EN" : "ع";
   $("q").placeholder = t("search_ph"); $("play").textContent = S.timer ? t("pause") : t("play");
   $("legend").innerHTML = `<span class="dot" style="background:${CATCOL.obs}"></span>${t("leg_obs")} · <span class="dot" style="background:${CATCOL.rad}"></span>${t("leg_rad")} · <span class="dot" style="background:${CATCOL.none}"></span>${t("leg_none")} · <span class="dot" style="background:${CATCOL.unk}"></span>${t("leg_unk")} · ■ ${t("leg_station")}. ${t("leg_note")}`;
-  const nb = $("notify"); if ("Notification" in window) { nb.hidden = false; const on = ls("notify") && Notification.permission === "granted"; nb.textContent = on ? t("notify_on") : t("notify"); nb.classList.toggle("on", !!on); }
+  // Header bell opens the Alerts tab, where background (push) notifications are managed.
+  const nb = $("notify"); nb.hidden = false; nb.textContent = t("notify");
 }
 function renderPills() {
   const rs = radarState(), pills = [];
@@ -383,11 +384,7 @@ function init() {
   $("langBtn").addEventListener("click", () => { lang = lang === "ar" ? "en" : "ar"; ls("lang", lang); render(); });
   $("q").addEventListener("input", onSearch);
   document.addEventListener("click", (e) => { if (!e.target.closest(".search")) $("results").hidden = true; });
-  $("notify").addEventListener("click", async () => {
-    if (ls("notify")) { ls("notify", false); return render(); }
-    try { const r = await Notification.requestPermission(); ls("notify", r === "granted"); } catch (_) {}
-    render();
-  });
+  $("notify").addEventListener("click", () => { if (typeof setTab === "function") setTab("alerts"); });
   loadAll(); setInterval(loadAll, 5 * 60 * 1000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden && Date.now() - S.lastLoad > 2 * 60 * 1000) loadAll(); });
   if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) navigator.serviceWorker.register("sw.js").catch(() => {});

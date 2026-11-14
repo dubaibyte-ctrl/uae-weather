@@ -2,6 +2,15 @@
 // Free-plan friendly: no external database to provision, one tiny instance.
 import { DurableObject } from "cloudflare:workers";
 import { score } from "./lib/score.js";
+import { sendWebPush } from "./lib/webpush.js";
+import { subKey } from "./lib/notify.js";
+
+// VAPID "sub" claim: the app's own URL (RFC 8292 allows an https URL) — no personal email is sent to push services.
+export const VAPID_SUBJECT = "https://uae-weather.dubaibyte.workers.dev";
+const TEST_MSG = {
+  en: { title: "✅ UAE Rain Explorer: test alert", body: "Background notifications work on this device. Tap to open your alerts.", lang: "en", dir: "ltr" },
+  ar: { title: "✅ مطر الإمارات: تنبيه تجريبي", body: "التنبيهات تعمل على هذا الجهاز حتى والتطبيق مغلق. اضغط لفتح التنبيهات.", lang: "ar", dir: "rtl" },
+};
 
 const KEEP_DAYS = 90;
 const GROUP_WINDOW_MS = 90 * 60 * 1000;   // same place + event within 90 min = one event (cross-source grouping)
@@ -28,6 +37,82 @@ export class ValidationLog extends DurableObject {
       url TEXT, sig TEXT, dup_of TEXT, has_location INTEGER, created_ms INTEGER, group_id TEXT)`);
     // Existing instances created the table before group_id existed; add it in place (ignored if already present).
     try { this.sql.exec("ALTER TABLE community ADD COLUMN group_id TEXT"); } catch (e) { /* column exists */ }
+    // Web Push subscriptions. Only what delivery needs: the browser's push endpoint + its two encryption keys, the place ids
+    // the user follows, the categories they enabled and the notification language. No IP, user agent, name or location.
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS push_subs(
+      endpoint TEXT PRIMARY KEY, p256dh TEXT NOT NULL, auth TEXT NOT NULL, places TEXT, cats TEXT, lang TEXT,
+      created_ms INTEGER, updated_ms INTEGER, last_ok_ms INTEGER, fail_count INTEGER DEFAULT 0)`);
+    // Dedupe ledger: one row per (subscription, weather event) already notified. sub_key is a hash, not the endpoint.
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS push_sent(sub_key TEXT, event_key TEXT, sent_ms INTEGER, PRIMARY KEY(sub_key, event_key))`);
+  }
+
+  // ---- Web Push subscriptions ----
+  pushUpsert(s) {
+    const now = Date.now(), prev = this.sql.exec("SELECT created_ms, last_ok_ms FROM push_subs WHERE endpoint=?", s.endpoint).toArray()[0];
+    this.sql.exec("INSERT OR REPLACE INTO push_subs VALUES(?,?,?,?,?,?,?,?,?,?)", s.endpoint, s.p256dh, s.auth,
+      JSON.stringify(s.places || []), JSON.stringify(s.cats || {}), s.lang || "en", prev ? prev.created_ms : now, now, prev ? prev.last_ok_ms : null, 0);
+    return { created: !prev };
+  }
+  pushDelete(endpoint) { this.sql.exec("DELETE FROM push_subs WHERE endpoint=?", endpoint); return { ok: true }; }
+  pushList() {
+    return this.sql.exec("SELECT * FROM push_subs").toArray().map((r) => ({ endpoint: r.endpoint, p256dh: r.p256dh, auth: r.auth,
+      places: JSON.parse(r.places || "[]"), cats: JSON.parse(r.cats || "{}"), lang: r.lang || "en", failCount: r.fail_count || 0, lastOkMs: r.last_ok_ms }));
+  }
+  pushGet(endpoint) { return this.pushList().find((s) => s.endpoint === endpoint) || null; }
+  // Record a delivery outcome. Expired subscriptions (404/410) and ones failing repeatedly are removed automatically.
+  pushResult(endpoint, { ok, gone }) {
+    if (gone) return this.pushDelete(endpoint);
+    if (ok) this.sql.exec("UPDATE push_subs SET last_ok_ms=?, fail_count=0 WHERE endpoint=?", Date.now(), endpoint);
+    else {
+      this.sql.exec("UPDATE push_subs SET fail_count=COALESCE(fail_count,0)+1 WHERE endpoint=?", endpoint);
+      this.sql.exec("DELETE FROM push_subs WHERE endpoint=? AND fail_count>=5", endpoint);
+    }
+    return { ok: true };
+  }
+  pushWasSent(subKey, eventKey) { return !!this.sql.exec("SELECT 1 FROM push_sent WHERE sub_key=? AND event_key=?", subKey, eventKey).toArray()[0]; }
+  pushMarkSent(subKey, eventKey) { this.sql.exec("INSERT OR IGNORE INTO push_sent VALUES(?,?,?)", subKey, eventKey, Date.now()); }
+  pushLastSentPrefix(subKey, prefix) { const r = this.sql.exec("SELECT MAX(sent_ms) AS m FROM push_sent WHERE sub_key=? AND substr(event_key,1,?)=?", subKey, prefix.length, prefix).toArray()[0]; return (r && r.m) || 0; }
+  pushSentSince(subKey, sinceMs) { return this.sql.exec("SELECT COUNT(*) AS n FROM push_sent WHERE sub_key=? AND sent_ms>?", subKey, sinceMs).toArray()[0].n; }
+  pushPruneSent(olderThanMs) { this.sql.exec("DELETE FROM push_sent WHERE sent_ms<?", olderThanMs); }
+  // VAPID keypair: created once and kept here (private key never leaves this object). Atomic set-if-absent so two first
+  // requests can't race to different keys.
+  pushVapidSetIfAbsent(v) { const cur = this.cfgGet("push:vapid"); if (cur) return { publicKey: cur.publicKey }; this.cfgSet("push:vapid", v); return { publicKey: v.publicKey }; }
+  pushVapidPublic() { const v = this.cfgGet("push:vapid"); return v ? v.publicKey : null; }
+  // Real background test: queue a test push for ~delay later, delivered by a Durable Object alarm through the normal Web
+  // Push path — so the user can close the app first and confirm a closed-app notification arrives. One per minute.
+  async pushQueueTest(endpoint, delayMs = 45000) {
+    if (!this.pushGet(endpoint)) return { ok: false, error: "not_subscribed" };
+    const sk = subKey(endpoint), last = this.cfgGet("push:testlast:" + sk) || 0;
+    if (Date.now() - last < 60000) return { ok: false, error: "rate_limited" };
+    const q = (this.cfgGet("push:testq") || []).filter((x) => x.endpoint !== endpoint);
+    const due = Date.now() + Math.min(Math.max(delayMs, 15000), 120000);
+    q.push({ endpoint, due }); this.cfgSet("push:testq", q); this.cfgSet("push:testlast:" + sk, Date.now());
+    const cur = await this.ctx.storage.getAlarm(); if (!cur || cur > due) await this.ctx.storage.setAlarm(due);
+    return { ok: true, dueMs: due };
+  }
+  async pushFlushTests() {
+    const vapid = this.cfgGet("push:vapid"), q = this.cfgGet("push:testq") || [];
+    if (!vapid || !q.length) return { sent: 0 };
+    const now = Date.now(), due = q.filter((x) => x.due <= now + 2000), rest = q.filter((x) => x.due > now + 2000);
+    this.cfgSet("push:testq", rest);
+    let sent = 0;
+    for (const x of due) {
+      const sub = this.pushGet(x.endpoint); if (!sub) continue;
+      const m = TEST_MSG[sub.lang === "ar" ? "ar" : "en"];
+      try {
+        const r = await sendWebPush(sub, { ...m, tag: "test", url: "/?tab=alerts", ts: now, cat: "test" }, { ...vapid, subject: VAPID_SUBJECT }, fetch, 600, "high");
+        this.pushResult(sub.endpoint, r);
+        this.cfgSet("push:lastTest", { at: now, status: r.status, ok: r.ok }); if (r.ok) sent++;
+      } catch (e) { this.cfgSet("push:lastTest", { at: now, error: String(e.message || e).slice(0, 120) }); }
+    }
+    if (rest.length) await this.ctx.storage.setAlarm(Math.min(...rest.map((x) => x.due)));
+    return { sent };
+  }
+  async alarm() { await this.pushFlushTests(); }
+  pushStats() {
+    const subs = this.sql.exec("SELECT COUNT(*) AS n FROM push_subs").toArray()[0].n;
+    const sent24 = this.sql.exec("SELECT COUNT(*) AS n FROM push_sent WHERE sent_ms>?", Date.now() - 86400e3).toArray()[0].n;
+    return { subscriptions: subs, sentLast24h: sent24 };
   }
 
   // Connector cursor/health state (not credentials) lives in config: conn:<id> -> {lastPollMs, ok, newestItemMs, lastExtId, accepted, skipped, saved, lastError}

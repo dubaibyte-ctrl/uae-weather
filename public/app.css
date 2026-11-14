@@ -149,3 +149,21 @@ button.btn.cfollow.on{background:var(--brand);color:var(--bg);border-color:var(-
 .crtop .nsrc{font-size:11px;border:1px solid var(--rad);color:var(--rad);border-radius:999px;padding:1px 7px;margin-inline-start:auto}
 .srcs{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:2px}
 a.btn.sm,span.btn.sm{padding:3px 8px;min-height:0;font-size:12px}
+
+/* ---------- rain notifications panel (Alerts tab) ---------- */
+.pstate{font-size:12px;font-weight:700;border:1px solid var(--line);border-radius:999px;padding:2px 9px;color:var(--muted)}
+.pstate.on{border-color:var(--ok);color:var(--ok)}
+.btn.primary{background:var(--brand);color:var(--bg);border-color:var(--brand)}
+button.btn{cursor:pointer}
+.pnote{font-size:13px;border-inline-start:3px solid var(--warn);background:color-mix(in srgb,var(--warn) 9%,transparent);padding:7px 10px;border-radius:6px;margin:6px 0}
+.pnote.bad{border-color:var(--bad);background:color-mix(in srgb,var(--bad) 8%,transparent)}
+.pcat{display:flex;gap:10px;align-items:flex-start;padding:7px 0;border-bottom:1px solid var(--line);font-size:14px}
+.pcat input{width:20px;height:20px;margin-top:2px;flex:none;accent-color:var(--brand)}
+.pareas{display:flex;flex-wrap:wrap;gap:6px}
+.pchip{display:inline-flex;align-items:center;gap:2px;border:1px solid var(--line);border-radius:999px;padding:2px 4px 2px 10px;font-size:13px}
+[dir=rtl] .pchip{padding:2px 10px 2px 4px}
+.prm{min-height:0;padding:2px 6px;color:var(--muted)}
+.padd{position:relative;margin-top:8px}
+.padd input{width:100%;font:inherit;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
+.padd .results{inset-inline:0}
+.pmsg{margin-top:8px;font-size:13px;font-weight:600;color:var(--brand)}
