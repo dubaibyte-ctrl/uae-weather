@@ -83,10 +83,18 @@ function log(name, ok, detail, ms) { S.log.push({ name, ok, detail, ms }); }
 let SNAP = { at: 0, p: null };
 function getSnapshot() {
   if (SNAP.p && Date.now() - SNAP.at < 30000) return SNAP.p;
-  SNAP = { at: Date.now(), p: getJSON("Weather snapshot", "/api/snapshot") };
+  SNAP = { at: Date.now(), p: getJSON("Weather snapshot", "/api/snapshot").then((j) => { saveSnapshot(j); return j; }) };
   return SNAP.p;
 }
 window.getSnapshot = getSnapshot;
+// Last good snapshot kept on this device (Opt 3 graceful degradation): used only when both the snapshot and the
+// original endpoints fail, and only if under 6 h old. Every item keeps its own observation time, so the app's normal
+// freshness rules label old radar/reports as stale — nothing is presented as current.
+function saveSnapshot(j) { try { if (j && j.scan && j.community) localStorage.setItem("lastSnap", JSON.stringify(j)); } catch (_) {} }
+window.lastSnapshot = function () {
+  try { const o = JSON.parse(localStorage.getItem("lastSnap") || "null"); if (o && Date.now() - o.generatedAt < 6 * 3600e3) { log("Weather snapshot (saved on device)", true, "built " + fmtT(o.generatedAt), 0); return o; } } catch (_) {}
+  return null;
+};
 async function getJSON(name, url) {
   const t0 = performance.now();
   try {
@@ -327,6 +335,7 @@ function renderValidation() {
 function renderAbout() {
   let h = `<h2 style="margin:0 0 6px;font-size:16px">${t("about")}</h2><p class="muted">${t("about_src")}</p><ul class="muted"><li>${t("about_l1")}</li><li>${t("about_l2")}</li><li>${t("about_l3")}</li><li>${t("about_l4")}</li></ul>`;
   h += `<details><summary>${t("status")}</summary><table>` + S.log.map((l) => `<tr><td>${esc(l.name)}</td><td class="${l.ok ? "ok" : "fail"}">${l.ok ? "OK" : "FAIL"}</td><td>${esc(l.detail)}</td><td>${l.ms ?? ""} ms</td></tr>`).join("") + `</table>`;
+  if (S.health && S.health.usage) { const u = S.health.usage; h += `<p class="muted">Data quota today (app meter, UTC day): rows read ${u.rowsRead.toLocaleString()} (${u.pctRead}%) · rows written ${u.rowsWritten.toLocaleString()} (${u.pctWritten}%) · mode ${u.level}${u.level !== "normal" ? " — cached data only until the 00:00 UTC reset" : ""}</p>`; }
   if (S.health && S.health.last) h += `<p class="muted">Collector: last run ${fmtDT(S.health.last.at_ms)} · METAR rows ${S.health.counts.metar} · radar rows ${S.health.counts.radar}${S.health.last.errors ? " · " + esc(S.health.last.errors) : ""}</p>`;
   $("about").innerHTML = h + `</details>`;
 }
@@ -379,7 +388,8 @@ async function loadAll() {
   try {
     S.log = [];
     // Validation stats + collector health feed only the diagnostics under More; don't poll them from every open tab.
-    const wantDiag = typeof H === "undefined" || H.tab === "more";
+    // (home.js, which defines H, loads after this file: on the very first load only fetch diagnostics if the link opens More)
+    const wantDiag = typeof H === "undefined" ? /[?&]tab=more\b/.test(location.search) : H.tab === "more";
     await Promise.all([loadRadar(), loadMetar(), loadOM(), wantDiag ? loadValidation() : null, window.loadRain ? window.loadRain() : null, window.loadCommunity ? window.loadCommunity() : null]);
     await probeAll(); S.lastLoad = Date.now(); render();
   } finally { S.busy = false; }

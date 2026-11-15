@@ -13,12 +13,19 @@ const TEST_MSG = {
 };
 
 const KEEP_DAYS = 90;
+// Free-plan Durable Object limits (per account per UTC day). The app meters its own SQLite reads/writes with the same
+// cursor counters Cloudflare bills (rowsRead/rowsWritten); it is an estimate to compare against the dashboard.
+export const FREE_ROWS_READ = 5000000, FREE_ROWS_WRITTEN = 100000, USAGE_ECONOMY = 0.6, USAGE_WARN = 0.8;
+const usageKey = (t = Date.now()) => "usage:" + new Date(t).toISOString().slice(0, 10);
 const GROUP_WINDOW_MS = 90 * 60 * 1000;   // same place + event within 90 min = one event (cross-source grouping)
 
 export class ValidationLog extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
-    this.sql = ctx.storage.sql;
+    // Metered SQL handle: every cursor is remembered and its rowsRead/rowsWritten summed into today's usage row. The
+    // flush runs before the next query (earlier cursors are consumed by then) at most once a minute or per 200 queries.
+    const raw = ctx.storage.sql; this._raw = raw; this._cur = []; this._flushAt = Date.now();
+    this.sql = { exec: (...a) => { if (this._cur.length >= 200 || Date.now() - this._flushAt > 60000) this.usageFlush(); const c = raw.exec(...a); this._cur.push(c); return c; } };
     this.sql.exec(`CREATE TABLE IF NOT EXISTS metar(
       station TEXT NOT NULL, obs_ms INTEGER NOT NULL, raw TEXT, wx TEXT, rain INTEGER, thunder INTEGER, hail INTEGER, temp REAL,
       PRIMARY KEY(station, obs_ms))`);
@@ -133,6 +140,31 @@ export class ValidationLog extends DurableObject {
   connStates(ids) { return ids.map((id) => ({ id, ...(this.cfgGet("conn:" + id) || {}) })); }
 
   // ---- server-managed config (webhook secret, authorized chats, webhook status). Never exposed raw to the public. ----
+  // ---- usage meter (Opt 3) ----
+  _pending() { let r = 0, w = 0; for (const c of this._cur) { r += c.rowsRead || 0; w += c.rowsWritten || 0; } return { r, w }; }
+  usageFlush() {
+    const p = this._pending(); this._cur = []; this._flushAt = Date.now();
+    let have = false; try { have = !!this._raw.exec("SELECT 1 FROM sqlite_master WHERE type='table' AND name='config'").toArray()[0]; } catch (_) {}
+    if (!have) return null;                                  // first boot: tables not created yet
+    const k = usageKey(), row = this._raw.exec("SELECT v FROM config WHERE k=?", k).toArray()[0];
+    const u = row ? JSON.parse(row.v) : { rowsRead: 0, rowsWritten: 0, since: Date.now() };
+    u.rowsRead += p.r; u.rowsWritten += p.w; u.at = Date.now();
+    this._raw.exec("INSERT OR REPLACE INTO config VALUES(?,?)", k, JSON.stringify(u));
+    return u;
+  }
+  usage() {
+    const u = this.usageFlush() || { rowsRead: 0, rowsWritten: 0 };
+    const pctRead = u.rowsRead / FREE_ROWS_READ, pctWritten = u.rowsWritten / FREE_ROWS_WRITTEN, pct = Math.max(pctRead, pctWritten);
+    return { day: usageKey().slice(6), rowsRead: u.rowsRead, rowsWritten: u.rowsWritten, since: u.since || null,
+      pctRead: +(pctRead * 100).toFixed(1), pctWritten: +(pctWritten * 100).toFixed(1),
+      level: pct >= USAGE_WARN ? "warn" : pct >= USAGE_ECONOMY ? "economy" : "normal",
+      limits: { rowsRead: FREE_ROWS_READ, rowsWritten: FREE_ROWS_WRITTEN }, resetsAt: "00:00 UTC" };
+  }
+  usageLevel() { return this.usage().level; }
+  // Economy mode: old live endpoints answer from the shared snapshot instead of recomputing.
+  economySnapshot(key) { return this.usageLevel() === "normal" ? null : this.cfgGet(key); }
+  // Once per UTC day per level: returns true the first time it is asked for that level today.
+  usageWarnOnce(level) { const k = "usagewarn:" + usageKey().slice(6) + ":" + level; if (this.cfgGet(k)) return false; this.cfgSet(k, Date.now()); return true; }
   cfgGet(k) { const r = this.sql.exec("SELECT v FROM config WHERE k=?", k).toArray()[0]; return r ? JSON.parse(r.v) : null; }
   cfgSet(k, v) { this.sql.exec("INSERT OR REPLACE INTO config VALUES(?,?)", k, JSON.stringify(v)); return v; }
   // Trust-on-first-use: the first channel to post becomes the authorized one; after that only authorized chats are kept.
@@ -210,13 +242,16 @@ export class ValidationLog extends DurableObject {
       this.sql.exec("DELETE FROM runs WHERE at_ms < ?", cutoff);
       this.cfgSet("counts", { metar: this.sql.exec("SELECT COUNT(*) AS n FROM metar").one().n, radar: this.sql.exec("SELECT COUNT(*) AS n FROM radar").one().n,
         runs: this.sql.exec("SELECT COUNT(*) AS n FROM runs").one().n, at: Date.now() });
+      const old = new Date(Date.now() - 14 * 86400e3).toISOString().slice(0, 10);   // keep 14 days of usage history
+      this.sql.exec("DELETE FROM config WHERE k >= 'usage:' AND k < ?", "usage:" + old);
+      this.sql.exec("DELETE FROM config WHERE k >= 'usagewarn:' AND k < ?", "usagewarn:" + old);
       this.cfgSet("maint:pruneDay", day);
     }
   }
 
   summary(days = 30) {
     const ck = "cache:summary:" + days, hit = this.cfgGet(ck);
-    if (hit && Date.now() - hit.at < 3 * 3600e3) return hit.v;
+    if (hit && (Date.now() - hit.at < 3 * 3600e3 || this.usageLevel() !== "normal")) return hit.v;
     const v = this.summaryFresh(days); this.cfgSet(ck, { at: Date.now(), v }); return v;
   }
   summaryFresh(days = 30) {

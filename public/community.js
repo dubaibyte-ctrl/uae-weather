@@ -61,7 +61,8 @@ const ST_DESC = { "officially-confirmed": "st_confirmed_d", "radar-corroborated"
 
 async function loadCommunity() {
   const snap = window.getSnapshot ? await window.getSnapshot() : null;
-  const j = snap && snap.community && Array.isArray(snap.community.groups) ? snap.community : await getJSON("Community reports", "/api/community?days=2");
+  let j = snap && snap.community && Array.isArray(snap.community.groups) ? snap.community : await getJSON("Community reports", "/api/community?days=2");
+  if (!j && window.lastSnapshot) { const o = window.lastSnapshot(); j = o ? o.community : null; }
   if (!j || !Array.isArray(j.groups)) { C.status = "error"; C.data = j || null; return renderCommunity(); }
   C.data = j; C.status = "ok"; renderCommunity();
 }

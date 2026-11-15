@@ -62,7 +62,8 @@ async function loadRain() {
     if (d && Array.isArray(d.places)) { d.places.forEach((p) => { p.lng = p.lon; }); R.db = d; }
   }
   const snap = window.getSnapshot ? await window.getSnapshot() : null;
-  const j = snap && snap.scan && Array.isArray(snap.scan.frames) ? snap.scan : await getJSON("Radar scan", "/api/scan");
+  let j = snap && snap.scan && Array.isArray(snap.scan.frames) ? snap.scan : await getJSON("Radar scan", "/api/scan");
+  if (!j && window.lastSnapshot) { const o = window.lastSnapshot(); j = o ? o.scan : null; }
   if (!R.db || !j || !Array.isArray(j.frames) || !j.frames.length) { R.scan = j && j.frames ? j : null; R.status = "error"; return renderRain(); }
   R.scan = j; R.frame = j.frames[0];
   R.prev = j.frames.find((f) => R.frame.ms - f.ms >= 12 * 60000 && R.frame.ms - f.ms <= 45 * 60000) || null;

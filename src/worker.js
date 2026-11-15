@@ -14,7 +14,7 @@ import { extractReport, reportSignature, verifyReport, classifyItem, buildRows }
 import { PULL_CONNECTORS, YT_CHANNELS, canonicalChannelUrl } from "./lib/connectors.js";
 import { PLACES } from "./lib/places-data.js";
 import { generateVapidKeys, sendWebPush } from "./lib/webpush.js";
-import { communityEvents, radarEvents, planSends, sanitizeSubscription, countingFetch, countingStub, runPushPass } from "./lib/notify.js";
+import { communityEvents, radarEvents, planSends, sanitizeSubscription, countingFetch, countingStub, runPushPass, subKey } from "./lib/notify.js";
 import { VAPID_SUBJECT } from "./log.js";
 
 export { ValidationLog };
@@ -68,6 +68,7 @@ async function collect(env) {
   try { await landmarkReparseOnce(stub); } catch (e) { errors.push("landmark-reparse: " + (e.message || e)); }
   try { await stub.cfgSet(SNAPSHOT_KEY, await buildSnapshot(stub)); } catch (e) { errors.push("snapshot: " + (e.message || e)); }
   try { await sendPushes(env, stub, errors, budget, cf); } catch (e) { errors.push("push: " + (e.message || e)); }
+  try { await quotaCheck(env, stub, errors, cf); } catch (e) { errors.push("quota: " + (e.message || e)); }
   try { await stub.pushFlushTests(); } catch (e) { errors.push("push-test: " + (e.message || e)); }   // backstop if an alarm was missed
   if (errors.length) await stub.noteErrors(at, errors);
   // Per-run subrequest counts (outbound vs Durable Object calls), recorded every run so production can be measured.
@@ -268,7 +269,9 @@ const WARNINGS = {
 };
 
 async function handleScan(env) {
-  return json(await scanPayload(logStub(env)), 200, { "cache-control": "public, max-age=60" });
+  const stub = logStub(env), eco = await stub.economySnapshot(SNAPSHOT_KEY);
+  if (eco && eco.scan) return json({ ...eco.scan, economy: true, generatedAt: eco.generatedAt }, 200, { "cache-control": "public, max-age=60" });
+  return json(await scanPayload(stub), 200, { "cache-control": "public, max-age=60" });
 }
 async function scanPayload(stub) {
   const [{ frames, coverage }, val] = await Promise.all([stub.loadScan(3), stub.summary(30).catch(() => null)]);
@@ -506,7 +509,9 @@ async function buildCommunity(stub, days) {
 
 async function handleCommunity(env, u) {
   const days = Math.min(Math.max(parseInt(u.searchParams.get("days") || "2", 10) || 2, 1), 14);
-  return json(await communityPayload(logStub(env), days), 200, { "cache-control": "no-store" });
+  const stub = logStub(env), eco = days === 2 ? await stub.economySnapshot(SNAPSHOT_KEY) : null;
+  if (eco && eco.community) return json({ ...eco.community, economy: true, generatedAt: eco.generatedAt }, 200, { "cache-control": "no-store" });
+  return json(await communityPayload(stub, days), 200, { "cache-control": "no-store" });
 }
 async function communityPayload(stub, days) {
   const { rows, reports, groups } = await buildCommunity(stub, days);
@@ -528,6 +533,26 @@ async function communityPayload(stub, days) {
     counts: { total: reports.length, events: groups.length, located: reports.filter((r) => r.hasLocation && !r.duplicateOf).length, duplicates: reports.filter((r) => r.duplicateOf).length, multiSource: groups.filter((g) => g.sources.length > 1).length },
     disclaimer: "Reports are obtained from publicly accessible platform data and are community claims, not measurements. This app is not affiliated with or endorsed by the source accounts. Each report stays unverified unless independently corroborated by radar or airport observations.",
   };
+}
+
+// ---------- Quota early warning (Opt 3) ----------
+// At 80% of a free daily limit, one push per UTC day to the owner's device: the subscription named in cfg push:owner,
+// or the only subscription when exactly one exists (personal use). Never to other users. Health always shows usage.
+const QUOTA_MSG = {
+  en: (u) => ({ title: "⚠️ UAE Rain Explorer: daily data quota " + Math.round(Math.max(u.pctRead, u.pctWritten)) + "%", body: "Economy mode is on (cached data, nothing shown as newer than it is). The quota resets at 04:00 UAE time." }),
+  ar: (u) => ({ title: "⚠️ مطر الإمارات: حصة البيانات اليومية " + Math.round(Math.max(u.pctRead, u.pctWritten)) + "٪", body: "تم تفعيل الوضع الاقتصادي (بيانات مخزنة، لا يُعرض شيء على أنه أحدث مما هو). تتجدد الحصة الساعة 04:00 بتوقيت الإمارات." }),
+};
+async function quotaCheck(env, stub, errors, f = fetch) {
+  const u = await stub.usage();
+  await stub.cfgSet("usage:last", u);
+  if (u.level !== "warn" || !(await stub.usageWarnOnce("warn"))) return;
+  const subs = await stub.pushList(), owner = await stub.cfgGet("push:owner");
+  const target = owner ? subs.find((x) => subKey(x.endpoint) === owner) : subs.length === 1 ? subs[0] : null;
+  const vapid = await stub.cfgGet("push:vapid");
+  if (!target || !vapid) { errors.push("quota: " + u.pctRead + "% read — no owner device for a warning push"); return; }
+  const m = QUOTA_MSG[target.lang === "ar" ? "ar" : "en"](u);
+  const r = await sendWebPush(target, { ...m, id: "quota:" + u.day, tag: "quota", url: "/?tab=more", ts: Date.now(), lang: target.lang, dir: target.lang === "ar" ? "rtl" : "ltr", cat: "quota" }, { ...vapid, subject: VAPID_SUBJECT }, f, 3600, "high");
+  await stub.pushResult(target.endpoint, r);
 }
 
 // ---------- Shared snapshot (Opt 2) ----------
@@ -634,9 +659,10 @@ export default {
       // Audit of the one-time false-positive cleanup (counts only; no private data).
       const maint = igCleanup ? { igPromoCleanup: { at: igCleanup.at, postsScanned: igCleanup.postsScanned, postsQuarantined: igCleanup.postsQuarantined, postsKept: igCleanup.postsKept, rowsQuarantined: igCleanup.rowsQuarantined, rowsPreserved: igCleanup.rowsPreserved } } : null;
       // Web Push health: counts and last-run outcome only — never an endpoint or key.
-      const [pstats, plast, ptest, cbud] = await Promise.all([stub.pushStats(), stub.cfgGet("push:lastRun"), stub.cfgGet("push:lastTest"), stub.cfgGet("collect:budget")]);
+      const [pstats, plast, ptest, cbud, usage] = await Promise.all([stub.pushStats(), stub.cfgGet("push:lastRun"), stub.cfgGet("push:lastTest"), stub.cfgGet("collect:budget"), stub.usage()]);
       const push = { ...pstats, lastRun: plast || null, lastTest: ptest || null, collectorSubrequests: cbud || null };
-      return json({ now: Date.now(), build: "2026-11-15-opt2-snapshot", ...h, telegram: tgStatus, connectors, maint, push }, 200, { "cache-control": "no-store" });
+      return json({ now: Date.now(), build: "2026-11-15-opt3-quota", ...h, telegram: tgStatus, connectors, maint, push,
+        usage: { ...usage, note: "App-side meter of this Durable Object's SQLite rows (same counters Cloudflare bills); an estimate — compare with the Cloudflare dashboard." } }, 200, { "cache-control": "no-store" });
     }
     if (u.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);
