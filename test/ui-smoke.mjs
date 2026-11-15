@@ -90,7 +90,7 @@ w.RG = RGmod;
 w.navigator.geolocation = { getCurrentPosition: (okcb) => okcb({ coords: { latitude: 25.0, longitude: 56.0 } }) };
 w.Image = class { set src(_) { setTimeout(() => this.onerror && this.onerror(), 0); } };
 w.eval(leaflet);
-w.eval(app + "\n" + rainjs + "\n" + communityjs);
+w.eval(app + "\n" + rainjs + "\n" + communityjs + "\n;window.__loadDiag = async () => { await loadValidation(); render(); };");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 await sleep(600);
 const $ = (id) => w.document.getElementById(id);
@@ -151,6 +151,8 @@ if (scenario === "rain") {
 check($("detail").textContent.includes("Hatta") === false || true, "detail renders");
 check(/Radar probe unavailable/.test(txt()), "radar probe failure is shown as unavailable (not as 'no rain')");
 check(!$("overview").textContent.includes("No radar echo near") && $("overview").textContent.includes("Radar check unavailable"), "overview does not claim 'no radar echo' when probes failed");
+// Diagnostics load only when the More tab is opened (Opt 3: not on every page load).
+if (typeof w.setTab === "function") { w.setTab("more"); await sleep(300); } else { await w.__loadDiag(); await sleep(50); }   // this harness loads app.js without home.js
 check($("validation").textContent.includes("Too few rain events"), "validation withholds rates when too few events");
 check($("validation").textContent.includes("http_404"), "validation surfaces radar read issues");
 $("langBtn").click(); await sleep(100);
