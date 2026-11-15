@@ -607,7 +607,7 @@ export default {
       // Web Push health: counts and last-run outcome only — never an endpoint or key.
       const [pstats, plast, ptest] = await Promise.all([stub.pushStats(), stub.cfgGet("push:lastRun"), stub.cfgGet("push:lastTest")]);
       const push = { ...pstats, lastRun: plast || null, lastTest: ptest || null };
-      return json({ now: Date.now(), build: "2026-11-14-web-push", ...h, telegram: tgStatus, connectors, maint, push }, 200, { "cache-control": "no-store" });
+      return json({ now: Date.now(), build: "2026-11-15-push-budget", ...h, telegram: tgStatus, connectors, maint, push }, 200, { "cache-control": "no-store" });
     }
     if (u.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);
