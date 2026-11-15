@@ -69,6 +69,8 @@ async function collect(env) {
   try { await sendPushes(env, stub, errors, budget, cf); } catch (e) { errors.push("push: " + (e.message || e)); }
   try { await stub.pushFlushTests(); } catch (e) { errors.push("push-test: " + (e.message || e)); }   // backstop if an alarm was missed
   if (errors.length) await stub.noteErrors(at, errors);
+  // Per-run subrequest counts (outbound vs Durable Object calls), recorded every run so production can be measured.
+  try { await stub.cfgSet("collect:budget", { at, outbound: budget.used, internal: budget.internal + 1 }); } catch (_) {}
 }
 
 // One-time maintenance: historical reports were parsed by an earlier gazetteer and can't be re-fetched (the connector
@@ -605,9 +607,9 @@ export default {
       // Audit of the one-time false-positive cleanup (counts only; no private data).
       const maint = igCleanup ? { igPromoCleanup: { at: igCleanup.at, postsScanned: igCleanup.postsScanned, postsQuarantined: igCleanup.postsQuarantined, postsKept: igCleanup.postsKept, rowsQuarantined: igCleanup.rowsQuarantined, rowsPreserved: igCleanup.rowsPreserved } } : null;
       // Web Push health: counts and last-run outcome only — never an endpoint or key.
-      const [pstats, plast, ptest] = await Promise.all([stub.pushStats(), stub.cfgGet("push:lastRun"), stub.cfgGet("push:lastTest")]);
-      const push = { ...pstats, lastRun: plast || null, lastTest: ptest || null };
-      return json({ now: Date.now(), build: "2026-11-15-push-budget", ...h, telegram: tgStatus, connectors, maint, push }, 200, { "cache-control": "no-store" });
+      const [pstats, plast, ptest, cbud] = await Promise.all([stub.pushStats(), stub.cfgGet("push:lastRun"), stub.cfgGet("push:lastTest"), stub.cfgGet("collect:budget")]);
+      const push = { ...pstats, lastRun: plast || null, lastTest: ptest || null, collectorSubrequests: cbud || null };
+      return json({ now: Date.now(), build: "2026-11-15-push-budget-2", ...h, telegram: tgStatus, connectors, maint, push }, 200, { "cache-control": "no-store" });
     }
     if (u.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);
