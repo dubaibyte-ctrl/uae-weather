@@ -78,6 +78,15 @@ const byId = (id) => places().find((p) => p.id === id);
 
 /* ---------------- data ---------------- */
 function log(name, ok, detail, ms) { S.log.push({ name, ok, detail, ms }); }
+// One shared snapshot per refresh for the radar scan and community feed (Opt 2). Both loaders call this; the request
+// is made once and reused for 30 s. On failure each loader falls back to its original endpoint.
+let SNAP = { at: 0, p: null };
+function getSnapshot() {
+  if (SNAP.p && Date.now() - SNAP.at < 30000) return SNAP.p;
+  SNAP = { at: Date.now(), p: getJSON("Weather snapshot", "/api/snapshot") };
+  return SNAP.p;
+}
+window.getSnapshot = getSnapshot;
 async function getJSON(name, url) {
   const t0 = performance.now();
   try {

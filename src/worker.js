@@ -66,6 +66,7 @@ async function collect(env) {
   try { await reparseCommunityOnce(stub); } catch (e) { errors.push("reparse: " + (e.message || e)); }
   try { await quarantineIgPromoOnce(stub); } catch (e) { errors.push("ig-cleanup: " + (e.message || e)); }
   try { await landmarkReparseOnce(stub); } catch (e) { errors.push("landmark-reparse: " + (e.message || e)); }
+  try { await stub.cfgSet(SNAPSHOT_KEY, await buildSnapshot(stub)); } catch (e) { errors.push("snapshot: " + (e.message || e)); }
   try { await sendPushes(env, stub, errors, budget, cf); } catch (e) { errors.push("push: " + (e.message || e)); }
   try { await stub.pushFlushTests(); } catch (e) { errors.push("push-test: " + (e.message || e)); }   // backstop if an alarm was missed
   if (errors.length) await stub.noteErrors(at, errors);
@@ -267,17 +268,19 @@ const WARNINGS = {
 };
 
 async function handleScan(env) {
-  const stub = logStub(env);
+  return json(await scanPayload(logStub(env)), 200, { "cache-control": "public, max-age=60" });
+}
+async function scanPayload(stub) {
   const [{ frames, coverage }, val] = await Promise.all([stub.loadScan(3), stub.summary(30).catch(() => null)]);
   const validated = !!(val && val.enough && val.pod != null && val.far != null && val.pod >= 0.6 && val.far <= 0.4);
-  return json({
+  return {
     now: Date.now(), frames, coverage,
     grid: { tx0: GRID.tx0, ty0: GRID.ty0, W: GRID.W, H: GRID.H },
     thresholds: { echoAlpha: ECHO_ALPHA, minClusterPx: MIN_CLUSTER_PX },
     validation: { validated, enough: !!(val && val.enough), rainEvents: val ? val.rainEvents : 0, pod: val ? val.pod : null, far: val ? val.far : null },
     intensity: { available: false, note: "Radar colour strength has not been validated against rainfall observations, so no intensity estimate is given." },
     warnings: WARNINGS,
-  }, 200, { "cache-control": "public, max-age=60" });
+  };
 }
 
 // ---------- Community Rain Reports (Telegram) ----------
@@ -503,7 +506,10 @@ async function buildCommunity(stub, days) {
 
 async function handleCommunity(env, u) {
   const days = Math.min(Math.max(parseInt(u.searchParams.get("days") || "2", 10) || 2, 1), 14);
-  const { rows, reports, groups } = await buildCommunity(logStub(env), days);
+  return json(await communityPayload(logStub(env), days), 200, { "cache-control": "no-store" });
+}
+async function communityPayload(stub, days) {
+  const { rows, reports, groups } = await buildCommunity(stub, days);
   // One entry per distinct source, with its platform and canonical page built from metadata — never a fabricated
   // Telegram link, and never the private chat id. A private Telegram channel simply has no public URL.
   const channels = [...new Map(rows.map((r) => [r.channel, {
@@ -517,11 +523,31 @@ async function handleCommunity(env, u) {
   const nowMs = Date.now();
   const lats = reports.filter((r) => r.hasLocation && !r.duplicateOf && r.latencyMs != null && (nowMs - r.publishMs) < 6 * 3600e3).map((r) => r.latencyMs).sort((a, b) => a - b);
   const latency = lats.length ? { medianMs: lats[Math.floor(lats.length / 2)], maxMs: lats[lats.length - 1], n: lats.length, cronFloorMs: 10 * 60000 } : null;
-  return json({
+  return {
     now: Date.now(), days, reports, groups, channels, latency,
     counts: { total: reports.length, events: groups.length, located: reports.filter((r) => r.hasLocation && !r.duplicateOf).length, duplicates: reports.filter((r) => r.duplicateOf).length, multiSource: groups.filter((g) => g.sources.length > 1).length },
     disclaimer: "Reports are obtained from publicly accessible platform data and are community claims, not measurements. This app is not affiliated with or endorsed by the source accounts. Each report stays unverified unless independently corroborated by radar or airport observations.",
-  }, 200, { "cache-control": "no-store" });
+  };
+}
+
+// ---------- Shared snapshot (Opt 2) ----------
+// The collector builds the radar-scan and community payloads ONCE per 10-minute run and stores them as one row; every
+// visitor then reads that row (1 Durable Object call, ~1 row) instead of recomputing (~5 calls, ~270 rows).
+// Three different times are kept apart: each radar frame's `ms` / report's observedMs|publishMs = when it was OBSERVED;
+// frame `savedMs` / report createdMs = when it was COLLECTED; `generatedAt` = when this snapshot was BUILT. The response
+// `now` is the serving time, so any age is computed against the real clock, never against the snapshot.
+const SNAPSHOT_KEY = "snapshot:v1", SNAPSHOT_STALE_MS = 25 * 60000;
+async function buildSnapshot(stub) {
+  const [scan, community] = await Promise.all([scanPayload(stub), communityPayload(stub, 2)]);
+  return { v: 1, generatedAt: Date.now(), scan, community };
+}
+async function handleSnapshot(env) {
+  const stub = logStub(env);
+  let snap = await stub.cfgGet(SNAPSHOT_KEY), source = "snapshot";
+  if (!snap) { snap = await buildSnapshot(stub); source = "live"; }   // first run after deploy: compute once, don't store
+  const now = Date.now(), ageMs = now - snap.generatedAt;
+  return json({ now, generatedAt: snap.generatedAt, ageSec: Math.round(ageMs / 1000), stale: ageMs > SNAPSHOT_STALE_MS, source,
+    scan: snap.scan, community: snap.community }, 200, { "cache-control": "no-store" });
 }
 
 // Phase B Business Discovery test endpoints were removed after the live test passed (2026-11-13), before enabling the
@@ -598,6 +624,7 @@ export default {
       return json(await logStub(env).summary(days), 200, { "cache-control": "public, max-age=300" });
     }
     if (u.pathname === "/api/scan") return handleScan(env);
+    if (u.pathname === "/api/snapshot") return handleSnapshot(env);
     if (u.pathname === "/api/health") {
       const stub = logStub(env);
       const [h, token, wok, buser, wstatus, authChats, igCleanup] = await Promise.all([stub.health(), getToken(env, stub), stub.cfgGet("webhookOk"), stub.cfgGet("botUsername"), stub.cfgGet("webhookStatus"), stub.cfgGet("authChats"), stub.cfgGet("maint:igPromoCleanupV1")]);
@@ -609,7 +636,7 @@ export default {
       // Web Push health: counts and last-run outcome only — never an endpoint or key.
       const [pstats, plast, ptest, cbud] = await Promise.all([stub.pushStats(), stub.cfgGet("push:lastRun"), stub.cfgGet("push:lastTest"), stub.cfgGet("collect:budget")]);
       const push = { ...pstats, lastRun: plast || null, lastTest: ptest || null, collectorSubrequests: cbud || null };
-      return json({ now: Date.now(), build: "2026-11-15-opt1-assets-polling", ...h, telegram: tgStatus, connectors, maint, push }, 200, { "cache-control": "no-store" });
+      return json({ now: Date.now(), build: "2026-11-15-opt2-snapshot", ...h, telegram: tgStatus, connectors, maint, push }, 200, { "cache-control": "no-store" });
     }
     if (u.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);
