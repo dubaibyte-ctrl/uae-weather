@@ -609,7 +609,7 @@ export default {
       // Web Push health: counts and last-run outcome only — never an endpoint or key.
       const [pstats, plast, ptest, cbud] = await Promise.all([stub.pushStats(), stub.cfgGet("push:lastRun"), stub.cfgGet("push:lastTest"), stub.cfgGet("collect:budget")]);
       const push = { ...pstats, lastRun: plast || null, lastTest: ptest || null, collectorSubrequests: cbud || null };
-      return json({ now: Date.now(), build: "2026-11-15-push-budget-2", ...h, telegram: tgStatus, connectors, maint, push }, 200, { "cache-control": "no-store" });
+      return json({ now: Date.now(), build: "2026-11-15-opt1-assets-polling", ...h, telegram: tgStatus, connectors, maint, push }, 200, { "cache-control": "no-store" });
     }
     if (u.pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);

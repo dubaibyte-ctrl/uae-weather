@@ -387,8 +387,10 @@ function init() {
   $("q").addEventListener("input", onSearch);
   document.addEventListener("click", (e) => { if (!e.target.closest(".search")) $("results").hidden = true; });
   $("notify").addEventListener("click", () => { if (typeof setTab === "function") setTab("alerts"); });
-  loadAll(); setInterval(loadAll, 5 * 60 * 1000);
-  document.addEventListener("visibilitychange", () => { if (!document.hidden && Date.now() - S.lastLoad > 2 * 60 * 1000) loadAll(); });
+  // Refresh every 5 min only while the app is on screen; a hidden tab or backgrounded PWA makes no requests, and
+  // coming back refreshes at once if the data is more than a minute old.
+  loadAll(); setInterval(() => { if (!document.hidden) loadAll(); }, 5 * 60 * 1000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && Date.now() - S.lastLoad > 60 * 1000) loadAll(); });
   if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) navigator.serviceWorker.register("sw.js").catch(() => {});
 }
 if (window.L) init(); else document.body.insertAdjacentHTML("afterbegin", '<div class="card" style="border-color:var(--bad)">Map library failed to load (offline or blocked).</div>');

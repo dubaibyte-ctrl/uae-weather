@@ -3,7 +3,7 @@
   "name": "uae-weather",
   "main": "src/worker.js",
   "compatibility_date": "2025-09-01",
-  "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": true },
+  "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": ["/api/*"] },
   "triggers": { "crons": ["*/10 * * * *"] },
   "durable_objects": { "bindings": [{ "name": "LOG", "class_name": "ValidationLog" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ValidationLog"] }],
